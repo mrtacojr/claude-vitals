@@ -19,6 +19,13 @@ configDir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 : "${VITALS_GIT_CACHE_SECS:=10}"
 : "${VITALS_IDLE_TIME:=1}"
 : "${VITALS_RC:=1}"
+: "${VITALS_AUDIT:=1}"
+: "${VITALS_AUDIT_CACHE_SECS:=15}"
+
+# Librería compartida (resolviendo el symlink de la statusline)
+self="$0"; [ -L "$self" ] && self="$(readlink "$self")"
+libfile="$(cd "$(dirname "$self")" && pwd)/vitals-lib.sh"
+[ -f "$libfile" ] && . "$libfile"
 
 # ---- Forward to spacecake if applicable (preserves existing integration) ----
 if [ -n "${SPACECAKE_TERMINAL}" ]; then
@@ -117,6 +124,25 @@ if [ "$VITALS_GIT" = 1 ] && [ -d "$cwd" ]; then
     mkdir -p "$state_dir" && printf '%s' "$git_part" >"$gcache"
   fi
   [ -n "$git_part" ] && parts+=("$git_part")
+fi
+
+# ---- tri-audit: fase actual de la auditoría 3-IA del workspace, si hay una ----
+# STOP y el gate pre-deploy se resaltan porque esperan decisión humana.
+if [ "$VITALS_AUDIT" = 1 ] && [ -d "$cwd" ] && type vitals_audit_badge >/dev/null 2>&1; then
+  acache="$state_dir/${session_id}.audit"
+  if [ -f "$acache" ] && [ $((now - $(stat -f %m "$acache" 2>/dev/null || echo 0))) -lt "$VITALS_AUDIT_CACHE_SECS" ]; then
+    badge=$(cat "$acache")
+  else
+    badge=$(vitals_audit_badge "$cwd")
+    mkdir -p "$state_dir" && printf '%s' "$badge" >"$acache"
+  fi
+  case "$badge" in
+    "") : ;;
+    STOP*)   parts+=($'\033[1;31m'"⚖ $badge"$'\033[0m') ;;
+    *gate*)  parts+=($'\033[1;33m'"⚖ $badge"$'\033[0m') ;;
+    OK)      parts+=("⚖ ✓") ;;
+    *)       parts+=("⚖ $badge") ;;
+  esac
 fi
 
 # ---- Remote Control: Claude Code exporta CLAUDE_CODE_BRIDGE_SESSION_ID a los

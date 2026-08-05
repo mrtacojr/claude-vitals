@@ -10,6 +10,11 @@
 
 state_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/vitals-state"
 
+# Librería compartida (resolviendo el symlink de instalación)
+self="$0"; [ -L "$self" ] && self="$(readlink "$self")"
+libfile="$(cd "$(dirname "$self")" && pwd)/vitals-lib.sh"
+[ -f "$libfile" ] && . "$libfile"
+
 if [ ! -d "$state_dir" ] || [ -z "$(ls -A "$state_dir" 2>/dev/null)" ]; then
   echo "No hay sesiones de Claude Code registradas."
   exit 0
@@ -43,6 +48,17 @@ for f in "$state_dir"/*; do
     working) key=1; icon="🟢"; label="trabajando"; extra=""; working=$((working + 1)) ;;
     *)       key=2; icon="🟡"; label="detenida"; extra=""; idle=$((idle + 1)) ;;
   esac
+
+  # Badge de tri-audit del proyecto, si aplica
+  if [ -n "$cwd" ] && type vitals_audit_badge >/dev/null 2>&1; then
+    badge=$(vitals_audit_badge "$cwd")
+    case "$badge" in
+      "") : ;;
+      OK) extra="⚖ ✓ $extra" ;;
+      STOP*|*gate*) extra="⚖ $badge ⚠ $extra" ;;
+      *) extra="⚖ $badge $extra" ;;
+    esac
+  fi
 
   rows+=$(printf '%s\t%s %-11s %-28s %-7s %s' "$key" "$icon" "$label" "$proj" "$age" "$extra")$'\n'
 done

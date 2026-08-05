@@ -10,6 +10,8 @@
 #VITALS_GIT=1             # rama git del workspace, con * si hay cambios
 #VITALS_IDLE_TIME=1       # cuánto lleva detenida/esperando la sesión
 #VITALS_RC=1              # 📡 al final de la línea si Remote Control está conectado
+#VITALS_AUDIT=1           # ⚖ fase de la auditoría tri-audit del proyecto (.audit/estado.md)
+#VITALS_AUDIT_CACHE_SECS=15 # cada cuántos segundos re-leer estado.md
 
 ## Umbrales y tiempos
 #VITALS_CTX_ALERT=80      # % de contexto usado a partir del cual se pinta rojo

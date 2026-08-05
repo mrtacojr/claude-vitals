@@ -72,7 +72,7 @@ case "$event" in
     fi
     ;;
   SessionEnd)
-    rm -f "$state_dir/$session" "$state_dir/$session.git"
+    rm -f "$state_dir/$session" "$state_dir/$session.git" "$state_dir/$session.audit"
     tab_reset
     ;;
 esac
