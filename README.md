@@ -18,24 +18,26 @@ Claude Code invoca el comando configurado en `statusLine` de `~/.claude/settings
 
 ## Instalación
 
-El script vive en este repo y `~/.claude/statusline-command.sh` es un symlink hacia él:
+Clona el repo y crea un symlink para que Claude Code use el script:
 
 ```bash
+git clone https://github.com/mrtacojr/claude-vitals.git
+cd claude-vitals
 ln -sf "$(pwd)/vitals.sh" ~/.claude/statusline-command.sh
 ```
 
-`settings.json` apunta al symlink:
+Y en `~/.claude/settings.json` apunta la statusline al symlink:
 
 ```json
 {
   "statusLine": {
     "type": "command",
-    "command": "/Users/fernandosilva/.claude/statusline-command.sh"
+    "command": "~/.claude/statusline-command.sh"
   }
 }
 ```
 
-Así, cualquier cambio commiteado aquí se refleja en vivo en la statusline.
+Así, cualquier cambio en el repo se refleja en vivo en la statusline.
 
 ## Requisitos
 
@@ -47,3 +49,11 @@ Así, cualquier cambio commiteado aquí se refleja en vivo en la statusline.
 - [ ] Costo de la sesión
 - [ ] Rama de git del workspace
 - [ ] Colores / iconos según % de contexto
+
+## Contribuir
+
+Issues y PRs son bienvenidos. La única regla: la salida debe caber en una línea de terminal.
+
+## Licencia
+
+[MIT](LICENSE)
