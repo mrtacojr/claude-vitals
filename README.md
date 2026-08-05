@@ -14,7 +14,7 @@ Signos vitales de tus sesiones de [Claude Code](https://claude.com/claude-code),
 - **Costo** acumulado de la sesión en USD
 - **Rama git** del workspace, con `*` si hay cambios sin commitear
 - **📡 Remote Control**: aparece al final de la línea mientras la sesión está conectada a claude.ai (vía `CLAUDE_CODE_BRIDGE_SESSION_ID`, requiere Claude Code ≥ 2.1.199)
-- **⚖ tri-audit**: si el proyecto tiene una auditoría [tri-audit](https://github.com/mrtacojr) activa (`.audit/estado.md`), muestra la fase en curso: `⚖ F4` (fase 4 pendiente), `⚖ F2↺` (ciclo de REWORK), `⚖ F7 gate` en amarillo (pausada esperando tu decisión pre-deploy), `⚖ STOP F4` en rojo (stop condition), `⚖ ✓` (iteración completa). También aparece en el CLI `vitals`. Sin `.audit/` no muestra nada
+- **⚖ tri-audit**: si el proyecto tiene una auditoría tri-audit activa — una metodología de auditoría multi-IA por fases que registra su avance en `.audit/estado.md`, muestra la fase en curso: `⚖ F4` (fase 4 pendiente), `⚖ F2↺` (ciclo de REWORK), `⚖ F7 gate` en amarillo (pausada esperando tu decisión pre-deploy), `⚖ STOP F4` en rojo (stop condition), `⚖ ✓` (iteración completa). También aparece en el CLI `vitals`. Sin `.audit/` no muestra nada
 
 **Fuera de la statusline:**
 
