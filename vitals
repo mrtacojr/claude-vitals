@@ -129,8 +129,12 @@ ai_live() {
   wait
   echo
 
+  # Cache para el badge 3IA de la statusline: "ia:ESTADO:latencia ..."
+  mkdir -p "$state_dir"
+  cacheline=""
   for ia in claude codex gemini; do
     IFS='|' read -r st dt detail <"$tmp/$ia"
+    cacheline+="${ia}:${st}:${dt} "
     name=$(printf '%-8s' "$(echo "$ia" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')")
     case "$ia" in gemini) extra=" ($GEMINI_MODEL)" ;; *) extra="" ;; esac
     if [ "$st" = OK ]; then
@@ -139,6 +143,7 @@ ai_live() {
       echo "$name ❌ FALLÓ tras ${dt}s$extra — ${detail:-sin detalle}"
     fi
   done
+  printf '%s\n' "$cacheline" >"$state_dir/ai-health"
 }
 
 if [ "${1:-}" = "ai" ]; then

@@ -14,6 +14,7 @@ Signos vitales de tus sesiones de [Claude Code](https://claude.com/claude-code),
 - **Costo** acumulado de la sesión en USD
 - **Rama git** del workspace, con `*` si hay cambios sin commitear
 - **📡 Remote Control**: aparece al final de la línea mientras la sesión está conectada a claude.ai (vía `CLAUDE_CODE_BRIDGE_SESSION_ID`, requiere Claude Code ≥ 2.1.199)
+- **3IA ✓/✗**: salud de las cuentas de IA de tri-audit, sin costo por refresco: la statusline solo muestra el cache del último `vitals ai --live`, y cuando tiene más de `VITALS_AI_TTL_HOURS` (default 5h) dispara **un** re-chequeo en background con candado compartido entre todas las sesiones. Si una IA falló, sale en rojo con su nombre: `3IA ✗ codex`
 - **⚖ tri-audit**: si el proyecto tiene una auditoría tri-audit activa — una metodología de auditoría multi-IA por fases que registra su avance en `.audit/estado.md`, muestra la fase en curso: `⚖ F4` (fase 4 pendiente), `⚖ F2↺` (ciclo de REWORK), `⚖ F7 gate` en amarillo (pausada esperando tu decisión pre-deploy), `⚖ STOP F4` en rojo (stop condition), `⚖ ✓` (iteración completa). También aparece en el CLI `vitals`. Sin `.audit/` no muestra nada
 
 **Fuera de la statusline:**
@@ -116,6 +117,7 @@ y descomenta lo que quieras: apagar módulos (`VITALS_COST=0`), cambiar el umbra
 - [x] Indicador 📡 de Remote Control activo
 - [x] Fase de auditoría tri-audit del proyecto (⚖)
 - [x] `vitals ai [--live]`: salud de las 3 cuentas de IA (Claude/Codex/Gemini)
+- [x] Badge 3IA en la statusline con cache y refresco en background cada N horas
 - [ ] `vitals --watch` (refresco en vivo del resumen)
 - [ ] Soporte para tab color en otras terminales (kitty, WezTerm)
 - [ ] Historial de costo por proyecto

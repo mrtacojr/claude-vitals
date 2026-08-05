@@ -20,6 +20,8 @@
 ## vitals ai (salud de las cuentas de IA)
 #VITALS_AI_TIMEOUT=60     # segundos máximos por IA en `vitals ai --live`
 #GEMINI_MODEL=gemini-pro-latest # modelo para el ping a la Gemini API
+#VITALS_AI_BADGE=1        # badge "3IA ✓/✗" en la statusline (usa el cache, nunca llama directo)
+#VITALS_AI_TTL_HOURS=5    # edad máxima del cache antes de re-chequear en background
 
 ## Hook (color de tab y notificaciones)
 #VITALS_TAB_COLOR=1       # pintar el tab de iTerm2 según estado

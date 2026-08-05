@@ -21,6 +21,8 @@ configDir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 : "${VITALS_RC:=1}"
 : "${VITALS_AUDIT:=1}"
 : "${VITALS_AUDIT_CACHE_SECS:=15}"
+: "${VITALS_AI_BADGE:=1}"
+: "${VITALS_AI_TTL_HOURS:=5}"
 
 # Librería compartida (resolviendo el symlink de la statusline)
 self="$0"; [ -L "$self" ] && self="$(readlink "$self")"
@@ -143,6 +145,37 @@ if [ "$VITALS_AUDIT" = 1 ] && [ -d "$cwd" ] && type vitals_audit_badge >/dev/nul
     OK)      parts+=("⚖ ✓") ;;
     *)       parts+=("⚖ $badge") ;;
   esac
+fi
+
+# ---- Badge 3IA: salud de las cuentas de tri-audit (Claude/Codex/Gemini) ----
+# La statusline NUNCA llama a las IAs: muestra el cache del último
+# `vitals ai --live` y, si tiene más de VITALS_AI_TTL_HOURS, dispara un
+# refresco en background (una sola vez, con candado compartido entre sesiones).
+if [ "$VITALS_AI_BADGE" = 1 ] && [ -f "$libfile" ]; then
+  ai_cache="$state_dir/ai-health"
+  ai_ttl=$((VITALS_AI_TTL_HOURS * 3600))
+  ai_age=$((now - $(stat -f %m "$ai_cache" 2>/dev/null || echo 0)))
+  if [ "$ai_age" -ge "$ai_ttl" ]; then
+    lock="$state_dir/ai-refresh.lock"
+    lock_age=$((now - $(stat -f %m "$lock" 2>/dev/null || echo 0)))
+    # candado vencido (>10 min) = refresco anterior murió; se limpia
+    [ -d "$lock" ] && [ "$lock_age" -gt 600 ] && rmdir "$lock" 2>/dev/null
+    if mkdir "$lock" 2>/dev/null; then
+      ( "$(dirname "$libfile")/vitals" ai --live >/dev/null 2>&1; rmdir "$lock" 2>/dev/null ) &
+    fi
+  fi
+  if [ -f "$ai_cache" ]; then
+    read -r ai_line <"$ai_cache"
+    ai_fails=""
+    for tok in $ai_line; do
+      case "$tok" in *:OK:*) : ;; *) ai_fails+="${tok%%:*} " ;; esac
+    done
+    if [ -z "$ai_fails" ]; then
+      parts+=("3IA ✓")
+    else
+      parts+=($'\033[1;31m'"3IA ✗ ${ai_fails% }"$'\033[0m')
+    fi
+  fi
 fi
 
 # ---- Remote Control: Claude Code exporta CLAUDE_CODE_BRIDGE_SESSION_ID a los
