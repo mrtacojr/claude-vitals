@@ -17,6 +17,7 @@ fi
 
 # Extract fields
 model=$(echo "$input" | jq -r '.model.display_name // "Unknown model"')
+session_id=$(echo "$input" | jq -r '.session_id // empty')
 used=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
 remaining=$(echo "$input" | jq -r '.context_window.remaining_percentage // empty')
 
@@ -30,4 +31,20 @@ else
   ctx_part="ctx --"
 fi
 
-printf "%s  |  %s" "$model" "$ctx_part"
+# Semáforo: estado escrito por vitals-hook.sh en cada evento de la sesión.
+# working parpadea verde, waiting parpadea rojo (requiere statusLine.refreshInterval
+# para animar mientras no hay actividad), idle queda amarillo fijo.
+state_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/vitals-state"
+state=idle
+if [ -n "$session_id" ] && [ -f "$state_dir/$session_id" ]; then
+  state=$(cat "$state_dir/$session_id")
+fi
+
+blink=$(( $(date +%s) % 2 ))
+case "$state" in
+  working) light="🟢"; [ "$blink" -eq 0 ] && light="⚪" ;;
+  waiting) light="🔴"; [ "$blink" -eq 0 ] && light="⚪" ;;
+  *)       light="🟡" ;;
+esac
+
+printf "%s %s  |  %s" "$light" "$model" "$ctx_part"
