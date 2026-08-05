@@ -25,10 +25,21 @@ Signos vitales de tus sesiones de [Claude Code](https://claude.com/claude-code),
 ```
 $ vitals
 🔴 esperando   nxt-cotizador   2m     (necesita tu respuesta)
-🟢 trabajando  apollo          8s
+🟢 trabajando  apollo          8s     ⚖ F2↺
 🟡 detenida    tri-audit       25m
 
 ── 3 sesiones: 1 trabajando · 1 esperándote · 1 detenidas
+```
+
+- **CLI `vitals ai`**: salud de las cuentas de IA que usa tri-audit (Claude Code, OpenAI Codex CLI, Google Gemini API). Sin argumentos verifica config y credenciales al instante; con `--live` hace una llamada real a las tres **en paralelo** y reporta latencia:
+
+```
+$ vitals ai --live
+Probando las 3 IAs en paralelo (timeout 60s)...
+
+Claude   ✅ respondió en 7s
+Codex    ✅ respondió en 6s
+Gemini   ✅ respondió en 3s (gemini-pro-latest)
 ```
 
 ## Cómo funciona
@@ -104,6 +115,7 @@ y descomenta lo que quieras: apagar módulos (`VITALS_COST=0`), cambiar el umbra
 - [x] Configuración por módulos
 - [x] Indicador 📡 de Remote Control activo
 - [x] Fase de auditoría tri-audit del proyecto (⚖)
+- [x] `vitals ai [--live]`: salud de las 3 cuentas de IA (Claude/Codex/Gemini)
 - [ ] `vitals --watch` (refresco en vivo del resumen)
 - [ ] Soporte para tab color en otras terminales (kitty, WezTerm)
 - [ ] Historial de costo por proyecto

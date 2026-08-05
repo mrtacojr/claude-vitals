@@ -1,26 +1,24 @@
 #!/usr/bin/env bash
-# vitals — resumen de todas las sesiones de Claude Code en esta máquina.
+# vitals — resumen de tus sesiones de Claude Code y salud de las cuentas de IA.
 #
-#   $ vitals
-#   🔴 esperando   nxt-cotizador      2m    (necesita tu respuesta)
-#   🟢 trabajando  apollo             8s
-#   🟡 detenida    claude-vitals      1h12m
+#   vitals            resumen de todas las sesiones (las que te esperan primero)
+#   vitals ai         chequeo rápido de las 3 cuentas de IA (config/credenciales)
+#   vitals ai --live  prueba real de ida y vuelta a las 3 IAs, en paralelo
 #
-# Lee ~/.claude/vitals-state/, mantenido por vitals-hook.sh.
+# Las "3 IAs" son las cuentas de la metodología tri-audit: Claude Code,
+# OpenAI Codex CLI y Google Gemini API.
 
-state_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/vitals-state"
+configDir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+state_dir="$configDir/vitals-state"
 
-# Librería compartida (resolviendo el symlink de instalación)
+# Config y librería compartida (resolviendo el symlink de instalación)
+[ -f "$configDir/vitals.conf" ] && . "$configDir/vitals.conf"
+: "${VITALS_AI_TIMEOUT:=60}"
+: "${GEMINI_MODEL:=gemini-pro-latest}"
+
 self="$0"; [ -L "$self" ] && self="$(readlink "$self")"
 libfile="$(cd "$(dirname "$self")" && pwd)/vitals-lib.sh"
 [ -f "$libfile" ] && . "$libfile"
-
-if [ ! -d "$state_dir" ] || [ -z "$(ls -A "$state_dir" 2>/dev/null)" ]; then
-  echo "No hay sesiones de Claude Code registradas."
-  exit 0
-fi
-
-now=$(date +%s)
 
 fmt_age() { # segundos -> "45s" / "12m" / "1h05m"
   local s=$1
@@ -30,12 +28,143 @@ fmt_age() { # segundos -> "45s" / "12m" / "1h05m"
   fi
 }
 
+# ============================ vitals ai ============================
+
+run_to() { # run_to <timeout_s> cmd...  — mata el comando si excede el timeout
+  local t=$1; shift
+  "$@" &
+  local pid=$!
+  # el watchdog suelta stdout/stderr para no mantener abierto el pipe del
+  # command substitution que envuelve a run_to
+  ( sleep "$t" && kill "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+  local wd=$!
+  wait "$pid" 2>/dev/null; local rc=$?
+  kill "$wd" 2>/dev/null; wait "$wd" 2>/dev/null
+  return $rc
+}
+
+gemini_key() {
+  if [ -n "${GEMINI_API_KEY:-}" ]; then printf '%s' "$GEMINI_API_KEY"
+  else cat "${GEMINI_API_KEY_FILE:-$HOME/.config/gemini/api_key}" 2>/dev/null
+  fi
+}
+
+ai_fast() {
+  echo "Chequeo de configuración (para prueba real: vitals ai --live)"
+  echo
+
+  # Claude
+  if command -v claude >/dev/null 2>&1; then
+    v=$(claude --version 2>/dev/null | head -n 1)
+    live=$(ls "$state_dir" 2>/dev/null | grep -cv '\.')
+    echo "Claude   ✅ CLI ${v:-instalada} · $live sesiones registradas"
+  else
+    echo "Claude   ❌ CLI 'claude' no encontrada en PATH"
+  fi
+
+  # Codex
+  if command -v codex >/dev/null 2>&1; then
+    v=$(codex --version 2>/dev/null | head -n 1)
+    if [ -f "$HOME/.codex/auth.json" ]; then
+      echo "Codex    ✅ CLI ${v:-instalada} · auth.json presente"
+    else
+      echo "Codex    ⚠️  CLI ${v:-instalada} · SIN ~/.codex/auth.json (corre: codex login)"
+    fi
+  else
+    echo "Codex    ❌ CLI 'codex' no encontrada en PATH"
+  fi
+
+  # Gemini
+  if [ -n "$(gemini_key)" ]; then
+    echo "Gemini   ✅ API key presente · modelo $GEMINI_MODEL"
+  else
+    echo "Gemini   ❌ sin API key (GEMINI_API_KEY o ~/.config/gemini/api_key)"
+  fi
+}
+
+ai_live() {
+  local tmp
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/vitals-ai.XXXXXX")
+  trap 'rm -rf "$tmp"' EXIT
+
+  echo "Probando las 3 IAs en paralelo (timeout ${VITALS_AI_TIMEOUT}s)..."
+
+  {
+    t0=$(date +%s)
+    out=$(run_to "$VITALS_AI_TIMEOUT" claude --model haiku -p "Responde únicamente: OK" 2>&1)
+    rc=$?
+    dt=$(( $(date +%s) - t0 ))
+    if [ $rc -eq 0 ] && [ -n "$out" ]; then echo "OK|$dt|$(printf '%s' "$out" | tail -n 1)"
+    else echo "FAIL|$dt|$(printf '%s' "$out" | head -n 1)"; fi
+  } >"$tmp/claude" &
+
+  {
+    t0=$(date +%s)
+    out=$(run_to "$VITALS_AI_TIMEOUT" codex exec --skip-git-repo-check -c sandbox_mode=read-only "Responde únicamente: OK" 2>/dev/null)
+    rc=$?
+    dt=$(( $(date +%s) - t0 ))
+    if [ $rc -eq 0 ] && [ -n "$out" ]; then echo "OK|$dt|$(printf '%s' "$out" | tail -n 1)"
+    else echo "FAIL|$dt|codex exec falló (rc=$rc)"; fi
+  } >"$tmp/codex" &
+
+  {
+    t0=$(date +%s)
+    key=$(gemini_key)
+    if [ -z "$key" ]; then
+      echo "FAIL|0|sin API key"
+    else
+      out=$(curl -s --max-time "$VITALS_AI_TIMEOUT" \
+        "https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${key}" \
+        -H 'Content-Type: application/json' \
+        -d '{"contents":[{"parts":[{"text":"Responde únicamente: OK"}]}]}' \
+        | jq -r '.candidates[0].content.parts[0].text // ("ERROR: " + (.error.message // "respuesta vacía"))' 2>/dev/null)
+      dt=$(( $(date +%s) - t0 ))
+      case "$out" in
+        ERROR:*|"") echo "FAIL|$dt|${out:-sin respuesta de la API}" ;;
+        *)          echo "OK|$dt|$out" ;;
+      esac
+    fi
+  } >"$tmp/gemini" &
+
+  wait
+  echo
+
+  for ia in claude codex gemini; do
+    IFS='|' read -r st dt detail <"$tmp/$ia"
+    name=$(printf '%-8s' "$(echo "$ia" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')")
+    case "$ia" in gemini) extra=" ($GEMINI_MODEL)" ;; *) extra="" ;; esac
+    if [ "$st" = OK ]; then
+      echo "$name ✅ respondió en ${dt}s$extra"
+    else
+      echo "$name ❌ FALLÓ tras ${dt}s$extra — ${detail:-sin detalle}"
+    fi
+  done
+}
+
+if [ "${1:-}" = "ai" ]; then
+  if [ "${2:-}" = "--live" ]; then ai_live; else ai_fast; fi
+  exit 0
+fi
+
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  sed -n '2,10p' "$self" | sed 's/^# \{0,1\}//'
+  exit 0
+fi
+
+# ======================= resumen de sesiones =======================
+
+if [ ! -d "$state_dir" ] || [ -z "$(ls -A "$state_dir" 2>/dev/null)" ]; then
+  echo "No hay sesiones de Claude Code registradas."
+  exit 0
+fi
+
+now=$(date +%s)
 waiting=0 working=0 idle=0
 rows=""
 
 for f in "$state_dir"/*; do
   [ -f "$f" ] || continue
-  case "$f" in *.git) continue ;; esac
+  case "$f" in *.git | *.audit) continue ;; esac
 
   state=$(head -n 1 "$f")
   cwd=$(sed -n 2p "$f")

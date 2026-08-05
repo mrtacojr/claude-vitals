@@ -17,6 +17,10 @@
 #VITALS_CTX_ALERT=80      # % de contexto usado a partir del cual se pinta rojo
 #VITALS_GIT_CACHE_SECS=10 # cada cuántos segundos re-consultar git
 
+## vitals ai (salud de las cuentas de IA)
+#VITALS_AI_TIMEOUT=60     # segundos máximos por IA en `vitals ai --live`
+#GEMINI_MODEL=gemini-pro-latest # modelo para el ping a la Gemini API
+
 ## Hook (color de tab y notificaciones)
 #VITALS_TAB_COLOR=1       # pintar el tab de iTerm2 según estado
 #VITALS_NOTIFY=1          # notificación de macOS cuando una sesión queda esperando
