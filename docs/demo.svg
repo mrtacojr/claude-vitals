@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="420" viewBox="0 0 760 420" font-family="'SF Mono', Menlo, Consolas, monospace" font-size="14">
+  <defs>
+    <style>
+      .win { fill: #1c1c26; stroke: #33333f; }
+      .bar { fill: #14141c; }
+      .txt { fill: #d6d6de; }
+      .dim { fill: #7a7a8a; }
+      .green { fill: #34c759; }
+      .yellow { fill: #ffcc00; }
+      .red { fill: #ff453a; }
+      .cyan { fill: #64d2ff; }
+      .title { fill: #9a9aa8; font-size: 12px; }
+    </style>
+  </defs>
+
+  <!-- ventana 1: trabajando -->
+  <rect class="win" x="10" y="10" width="740" height="86" rx="10"/>
+  <circle cx="34" cy="32" r="6" fill="#ff5f57"/><circle cx="54" cy="32" r="6" fill="#febc2e"/><circle cx="74" cy="32" r="6" fill="#28c840"/>
+  <text class="title" x="380" y="37" text-anchor="middle">apollo — Claude está trabajando</text>
+  <text x="30" y="76"><tspan class="green">🟢</tspan><tspan class="txt">  Fable 5</tspan><tspan class="dim">  |  </tspan><tspan class="txt">ctx 14% used | 86% left</tspan><tspan class="dim">  |  </tspan><tspan class="txt">$2.35</tspan><tspan class="dim">  |  </tspan><tspan class="cyan">⎇ main*</tspan></text>
+
+  <!-- ventana 2: esperando input -->
+  <rect class="win" x="10" y="112" width="740" height="86" rx="10"/>
+  <circle cx="34" cy="134" r="6" fill="#ff5f57"/><circle cx="54" cy="134" r="6" fill="#febc2e"/><circle cx="74" cy="134" r="6" fill="#28c840"/>
+  <text class="title" x="380" y="139" text-anchor="middle">nxt-cotizador — esperando tu respuesta (parpadea + notificación)</text>
+  <text x="30" y="178"><tspan class="red">🔴 2m</tspan><tspan class="txt">  Fable 5</tspan><tspan class="dim">  |  </tspan><tspan class="txt">ctx 47% used | 53% left</tspan><tspan class="dim">  |  </tspan><tspan class="txt">$8.10</tspan><tspan class="dim">  |  </tspan><tspan class="cyan">⎇ feature/api</tspan></text>
+
+  <!-- ventana 3: detenida, contexto alto -->
+  <rect class="win" x="10" y="214" width="740" height="86" rx="10"/>
+  <circle cx="34" cy="236" r="6" fill="#ff5f57"/><circle cx="54" cy="236" r="6" fill="#febc2e"/><circle cx="74" cy="236" r="6" fill="#28c840"/>
+  <text class="title" x="380" y="241" text-anchor="middle">tri-audit — detenida hace 25 min, contexto en alerta</text>
+  <text x="30" y="280"><tspan class="yellow">🟡 25m</tspan><tspan class="txt">  Fable 5</tspan><tspan class="dim">  |  </tspan><tspan class="red">ctx 92% used | 8% left ⚠</tspan><tspan class="dim">  |  </tspan><tspan class="txt">$11.02</tspan><tspan class="dim">  |  </tspan><tspan class="cyan">⎇ main</tspan></text>
+
+  <!-- CLI vitals -->
+  <rect class="win" x="10" y="316" width="740" height="94" rx="10"/>
+  <text x="30" y="342"><tspan class="dim">$ </tspan><tspan class="txt">vitals</tspan></text>
+  <text x="30" y="362"><tspan class="red">🔴 esperando</tspan><tspan class="txt">   nxt-cotizador   2m     (necesita tu respuesta)</tspan></text>
+  <text x="30" y="380"><tspan class="green">🟢 trabajando</tspan><tspan class="txt">  apollo          8s</tspan></text>
+  <text x="30" y="398"><tspan class="yellow">🟡 detenida</tspan><tspan class="txt">    tri-audit       25m</tspan></text>
+</svg>

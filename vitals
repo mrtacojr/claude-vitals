@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# vitals — resumen de todas las sesiones de Claude Code en esta máquina.
+#
+#   $ vitals
+#   🔴 esperando   nxt-cotizador      2m    (necesita tu respuesta)
+#   🟢 trabajando  apollo             8s
+#   🟡 detenida    claude-vitals      1h12m
+#
+# Lee ~/.claude/vitals-state/, mantenido por vitals-hook.sh.
+
+state_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/vitals-state"
+
+if [ ! -d "$state_dir" ] || [ -z "$(ls -A "$state_dir" 2>/dev/null)" ]; then
+  echo "No hay sesiones de Claude Code registradas."
+  exit 0
+fi
+
+now=$(date +%s)
+
+fmt_age() { # segundos -> "45s" / "12m" / "1h05m"
+  local s=$1
+  if [ "$s" -lt 60 ]; then printf '%ds' "$s"
+  elif [ "$s" -lt 3600 ]; then printf '%dm' "$((s / 60))"
+  else printf '%dh%02dm' "$((s / 3600))" "$(((s % 3600) / 60))"
+  fi
+}
+
+waiting=0 working=0 idle=0
+rows=""
+
+for f in "$state_dir"/*; do
+  [ -f "$f" ] || continue
+  case "$f" in *.git) continue ;; esac
+
+  state=$(head -n 1 "$f")
+  cwd=$(sed -n 2p "$f")
+  proj=$(basename "${cwd:-¿?}")
+  mt=$(stat -f %m "$f" 2>/dev/null || echo "$now")
+  age=$(fmt_age $((now - mt)))
+
+  case "$state" in
+    waiting) key=0; icon="🔴"; label="esperando"; extra="(necesita tu respuesta)"; waiting=$((waiting + 1)) ;;
+    working) key=1; icon="🟢"; label="trabajando"; extra=""; working=$((working + 1)) ;;
+    *)       key=2; icon="🟡"; label="detenida"; extra=""; idle=$((idle + 1)) ;;
+  esac
+
+  rows+=$(printf '%s\t%s %-11s %-28s %-7s %s' "$key" "$icon" "$label" "$proj" "$age" "$extra")$'\n'
+done
+
+printf '%s' "$rows" | sort | cut -f2-
+
+total=$((waiting + working + idle))
+echo
+echo "── $total sesiones: $working trabajando · $waiting esperándote · $idle detenidas"

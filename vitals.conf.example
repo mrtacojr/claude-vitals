@@ -1,0 +1,20 @@
+# claude-vitals — configuración opcional.
+# Copia este archivo a ~/.claude/vitals.conf y descomenta lo que quieras cambiar.
+# Es sintaxis de shell (lo cargan vitals.sh y vitals-hook.sh con `source`).
+
+## Módulos de la statusline (1 = on, 0 = off)
+#VITALS_SEMAFORO=1        # 🟢/🟡/🔴 por sesión
+#VITALS_MODEL=1           # nombre del modelo
+#VITALS_CTX=1             # % de contexto usado/restante
+#VITALS_COST=1            # costo acumulado de la sesión en USD
+#VITALS_GIT=1             # rama git del workspace, con * si hay cambios
+#VITALS_IDLE_TIME=1       # cuánto lleva detenida/esperando la sesión
+
+## Umbrales y tiempos
+#VITALS_CTX_ALERT=80      # % de contexto usado a partir del cual se pinta rojo
+#VITALS_GIT_CACHE_SECS=10 # cada cuántos segundos re-consultar git
+
+## Hook (color de tab y notificaciones)
+#VITALS_TAB_COLOR=1       # pintar el tab de iTerm2 según estado
+#VITALS_NOTIFY=1          # notificación de macOS cuando una sesión queda esperando
+#VITALS_NOTIFY_DELAY=10   # segundos esperando antes de notificar (anti-ruido)
