@@ -9,6 +9,7 @@
 #VITALS_COST=1            # costo acumulado de la sesión en USD
 #VITALS_GIT=1             # rama git del workspace, con * si hay cambios
 #VITALS_IDLE_TIME=1       # cuánto lleva detenida/esperando la sesión
+#VITALS_RC=1              # 📡 al final de la línea si Remote Control está conectado
 
 ## Umbrales y tiempos
 #VITALS_CTX_ALERT=80      # % de contexto usado a partir del cual se pinta rojo

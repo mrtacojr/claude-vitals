@@ -18,6 +18,7 @@ configDir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 : "${VITALS_GIT:=1}"
 : "${VITALS_GIT_CACHE_SECS:=10}"
 : "${VITALS_IDLE_TIME:=1}"
+: "${VITALS_RC:=1}"
 
 # ---- Forward to spacecake if applicable (preserves existing integration) ----
 if [ -n "${SPACECAKE_TERMINAL}" ]; then
@@ -116,6 +117,13 @@ if [ "$VITALS_GIT" = 1 ] && [ -d "$cwd" ]; then
     mkdir -p "$state_dir" && printf '%s' "$git_part" >"$gcache"
   fi
   [ -n "$git_part" ] && parts+=("$git_part")
+fi
+
+# ---- Remote Control: Claude Code exporta CLAUDE_CODE_BRIDGE_SESSION_ID a los
+# subprocesos de la statusline solo mientras el bridge está conectado (v2.1.199+).
+# CLAUDE_CODE_REMOTE_SESSION_ID es el equivalente en sesiones cloud.
+if [ "$VITALS_RC" = 1 ] && { [ -n "$CLAUDE_CODE_BRIDGE_SESSION_ID" ] || [ -n "$CLAUDE_CODE_REMOTE_SESSION_ID" ]; }; then
+  parts+=("📡 rc")
 fi
 
 # ---- Armar la línea ----

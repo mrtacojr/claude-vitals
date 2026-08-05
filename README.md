@@ -13,6 +13,7 @@ Signos vitales de tus sesiones de [Claude Code](https://claude.com/claude-code),
 - **Contexto** usado/restante — se pinta **rojo con ⚠** al superar el umbral (default 80%)
 - **Costo** acumulado de la sesión en USD
 - **Rama git** del workspace, con `*` si hay cambios sin commitear
+- **📡 Remote Control**: aparece al final de la línea mientras la sesión está conectada a claude.ai (vía `CLAUDE_CODE_BRIDGE_SESSION_ID`, requiere Claude Code ≥ 2.1.199)
 
 **Fuera de la statusline:**
 
@@ -100,6 +101,7 @@ y descomenta lo que quieras: apagar módulos (`VITALS_COST=0`), cambiar el umbra
 - [x] Notificación de macOS cuando Claude espera tu respuesta
 - [x] CLI `vitals` con el resumen de todas las sesiones
 - [x] Configuración por módulos
+- [x] Indicador 📡 de Remote Control activo
 - [ ] `vitals --watch` (refresco en vivo del resumen)
 - [ ] Soporte para tab color en otras terminales (kitty, WezTerm)
 - [ ] Historial de costo por proyecto

@@ -17,7 +17,7 @@
   <rect class="win" x="10" y="10" width="740" height="86" rx="10"/>
   <circle cx="34" cy="32" r="6" fill="#ff5f57"/><circle cx="54" cy="32" r="6" fill="#febc2e"/><circle cx="74" cy="32" r="6" fill="#28c840"/>
   <text class="title" x="380" y="37" text-anchor="middle">apollo — Claude está trabajando</text>
-  <text x="30" y="76"><tspan class="green">🟢</tspan><tspan class="txt">  Fable 5</tspan><tspan class="dim">  |  </tspan><tspan class="txt">ctx 14% used | 86% left</tspan><tspan class="dim">  |  </tspan><tspan class="txt">$2.35</tspan><tspan class="dim">  |  </tspan><tspan class="cyan">⎇ main*</tspan></text>
+  <text x="30" y="76"><tspan class="green">🟢</tspan><tspan class="txt">  Fable 5</tspan><tspan class="dim">  |  </tspan><tspan class="txt">ctx 14% used | 86% left</tspan><tspan class="dim">  |  </tspan><tspan class="txt">$2.35</tspan><tspan class="dim">  |  </tspan><tspan class="cyan">⎇ main*</tspan><tspan class="dim">  |  </tspan><tspan class="txt">📡 rc</tspan></text>
 
   <!-- ventana 2: esperando input -->
   <rect class="win" x="10" y="112" width="740" height="86" rx="10"/>
