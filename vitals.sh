@@ -23,6 +23,10 @@ configDir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 : "${VITALS_AUDIT_CACHE_SECS:=15}"
 : "${VITALS_AI_BADGE:=1}"
 : "${VITALS_AI_TTL_HOURS:=5}"
+: "${VITALS_WINDOW_BG:=1}"
+: "${VITALS_BADGE:=1}"
+: "${VITALS_BG_WAITING:=4a1015}"
+: "${VITALS_BADGE_TEXT:=ESPERA}"
 
 # Librería compartida (resolviendo el symlink de la statusline)
 self="$0"; [ -L "$self" ] && self="$(readlink "$self")"
@@ -62,16 +66,45 @@ fmt_age() { # segundos -> "45s" / "12m" / "1h05m"
   fi
 }
 
+# ---- Alta y relleno del archivo de estado ----
+# Dos huecos que solo la statusline puede tapar, porque es lo único que corre en
+# toda sesión viva:
+#   a) una sesión abierta antes de instalar los hooks no tiene archivo, así que
+#      quedaba invisible para `vitals` mientras sus caches se acumulaban;
+#   b) una escrita por una versión anterior lo tiene sin el UUID de iTerm2 ni el
+#      PID (líneas 3 y 4), que son las que hacen posible `vitals go`.
+# El caso (b) importa sobre todo en las sesiones que te esperan: no van a
+# disparar otro hook hasta que les respondas, y para responderles necesitas
+# poder saltar a ellas.
+# Al rellenar se preserva el mtime: es el reloj del tiempo detenido.
+if [ "$session_id" != "-" ] && type vitals_claude_pid >/dev/null 2>&1; then
+  sfile0="$state_dir/$session_id"
+  if [ ! -f "$sfile0" ]; then
+    mkdir -p "$state_dir"
+    printf 'idle\n%s\n%s\n%s\n' \
+      "$cwd" "$(vitals_iterm_uuid)" "$(vitals_claude_pid)" >"$sfile0"
+  elif [ -z "$(sed -n 3p "$sfile0")" ] || [ -z "$(sed -n 4p "$sfile0")" ]; then
+    l1=$(sed -n 1p "$sfile0"); l2=$(sed -n 2p "$sfile0")
+    keep_mt=$(stat -f %m "$sfile0" 2>/dev/null)
+    [ -n "$l1" ] || l1=idle
+    [ -n "$l2" ] || l2="$cwd"
+    printf '%s\n%s\n%s\n%s\n' \
+      "$l1" "$l2" "$(vitals_iterm_uuid)" "$(vitals_claude_pid)" >"$sfile0"
+    [ -n "$keep_mt" ] && touch -m -t "$(date -r "$keep_mt" '+%Y%m%d%H%M.%S')" "$sfile0"
+  fi
+fi
+
+# ---- Estado de la sesión, escrito por vitals-hook.sh ----
+state=idle
+sfile="$state_dir/$session_id"
+[ -f "$sfile" ] && state=$(head -n 1 "$sfile")
+
 parts=()
 
-# ---- Semáforo: estado escrito por vitals-hook.sh ----
+# ---- Semáforo ----
 # working parpadea verde, waiting parpadea rojo (requiere statusLine.refreshInterval),
 # idle queda amarillo fijo con el tiempo que lleva detenido.
 if [ "$VITALS_SEMAFORO" = 1 ]; then
-  state=idle
-  sfile="$state_dir/$session_id"
-  [ -f "$sfile" ] && state=$(head -n 1 "$sfile")
-
   blink=$((now % 2))
   case "$state" in
     working) light="🟢"; [ "$blink" -eq 0 ] && light="⚪" ;;
@@ -84,6 +117,30 @@ if [ "$VITALS_SEMAFORO" = 1 ]; then
     [ -n "$mt" ] && light="$light $(fmt_age $((now - mt)))"
   fi
   parts+=("$light")
+fi
+
+# ---- Reconciliación de las señales visuales de la ventana ----
+# El hook las aplica y las quita en el momento del evento, pero eso deja dos
+# huecos: una sesión que entró en waiting antes de instalar esta versión nunca
+# se pintó, y no va a disparar otro hook justamente hasta que le respondas; y
+# si la escritura al tty falla, la ventana queda marcada de más o de menos.
+# El archivo .signal registra si la ventana está marcada; aquí se compara con
+# el estado real y se corrige en cualquiera de las dos direcciones.
+if type vitals_bg_set >/dev/null 2>&1; then
+  marker="$state_dir/${session_id}.signal"
+  if [ "$state" = waiting ] && [ ! -f "$marker" ]; then
+    # el marcador solo se crea si la escritura al terminal llegó de verdad;
+    # si falla, no se marca y el siguiente refresco lo reintenta
+    applied=0
+    [ "$VITALS_WINDOW_BG" = 1 ] && vitals_bg_set "$VITALS_BG_WAITING" && applied=1
+    [ "$VITALS_BADGE" = 1 ] && vitals_badge_set "$VITALS_BADGE_TEXT
+$(basename "$cwd")" && applied=1
+    [ "$applied" = 1 ] && : >"$marker"
+  elif [ "$state" != waiting ] && [ -f "$marker" ]; then
+    [ "$VITALS_WINDOW_BG" = 1 ] && vitals_bg_reset
+    [ "$VITALS_BADGE" = 1 ] && vitals_badge_clear
+    rm -f "$marker"
+  fi
 fi
 
 # ---- Modelo ----

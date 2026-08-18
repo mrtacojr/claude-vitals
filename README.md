@@ -2,6 +2,8 @@
 
 Signos vitales de tus sesiones de [Claude Code](https://claude.com/claude-code), pensado para cuando trabajas en **muchos proyectos a la vez**: cada terminal te dice de un vistazo si Claude está trabajando, detenido, o esperándote — y si te espera, te busca él a ti.
 
+Con treinta ventanas abiertas repartidas en varios Spaces, un ícono en la statusline mide un par de píxeles en Mission Control. Por eso la señal de "te estoy esperando" no vive solo ahí: **la ventana entera se pinta**, y `vitals go` te lleva a ella.
+
 ![demo](docs/demo.svg)
 
 ## Qué hace
@@ -17,20 +19,42 @@ Signos vitales de tus sesiones de [Claude Code](https://claude.com/claude-code),
 - **3IA ✓/✗**: salud de las cuentas de IA de tri-audit, sin costo por refresco: la statusline solo muestra el cache del último `vitals ai --live`, y cuando tiene más de `VITALS_AI_TTL_HOURS` (default 5h) dispara **un** re-chequeo en background con candado compartido entre todas las sesiones. Si una IA falló, sale en rojo con su nombre: `3IA ✗ codex`
 - **⚖ tri-audit**: si el proyecto tiene una auditoría tri-audit activa — una metodología de auditoría multi-IA por fases que registra su avance en `.audit/estado.md`, muestra la fase en curso: `⚖ F4` (fase 4 pendiente), `⚖ F2↺` (ciclo de REWORK), `⚖ F7 gate` en amarillo (pausada esperando tu decisión pre-deploy), `⚖ STOP F4` en rojo (stop condition), `⚖ ✓` (iteración completa). También aparece en el CLI `vitals`. Sin `.audit/` no muestra nada
 
+**Cuando Claude te espera, la ventana entera cambia:**
+
+- **Fondo de la ventana completa** en rojo oscuro (`#4a1015`) — es la señal con más superficie visible y la única que sigue siendo legible cuando miras 30 ventanas desde Mission Control. Solo se pinta el estado `waiting`: si se pintaran los tres estados, el rojo dejaría de destacar. El color mantiene 11:1 de contraste con el texto, así que puedes seguir trabajando sobre él
+- **Badge de iTerm2** con el estado y el nombre del proyecto en letras grandes, para saber *cuál* proyecto te espera sin entrar a la ventana
+- **Rebote del ícono en el Dock**, visible desde cualquier Space sin abrir Mission Control
+
+Todo se revierte solo al responder. Si algo queda pintado porque una sesión murió de golpe, se limpia al abrir Claude en esa ventana, y `vitals reset-colors` es la escotilla manual.
+
 **Fuera de la statusline:**
 
-- **Color del tab de iTerm2** según el estado (verde/amarillo/rojo) — visible de lejos con muchas ventanas abiertas
+- **Color del tab de iTerm2** según el estado (verde/amarillo/rojo)
 - **Notificación de macOS** si una sesión lleva más de N segundos esperando tu respuesta (default 10s, anti-ruido)
 - **CLI `vitals`**: resumen de todas las sesiones de la máquina:
 
 ```
 $ vitals
-🔴 esperando   nxt-cotizador   2m     (necesita tu respuesta)
-🟢 trabajando  apollo          8s     ⚖ F2↺
-🟡 detenida    tri-audit       25m
+ 1. 🔴 esperando   nxt-cotizador   2m     (necesita tu respuesta)
+ 2. 🟢 trabajando  apollo          8s     ⚖ F2↺
+ 3. 🟡 detenida    tri-audit       25m
 
 ── 3 sesiones: 1 trabajando · 1 esperándote · 1 detenidas
+   vitals go   salta a la que lleva más tiempo esperándote
 ```
+
+Solo lista sesiones vivas: cada estado guarda el PID de su proceso `claude`, así que una terminal que cerraste sin más deja de aparecer en vez de seguir gritando "esperando" durante días.
+
+- **CLI `vitals go`**: trae al frente la ventana de la sesión, cambiando de Space si hace falta. Sin argumentos va a la que lleva más tiempo esperándote; también acepta el número de la lista o parte del nombre del proyecto (`vitals go apollo`). Funciona porque el hook guarda el UUID de sesión de iTerm2 junto al estado
+
+```
+$ vitals go
+→ nxt-cotizador (esperándote hace 2m)
+```
+
+Requiere permiso de Automatización de la terminal sobre iTerm2; macOS lo pide la primera vez.
+
+- **CLI `vitals demo [hex] [segundos]`**: aplica las señales de "te espera" en la terminal donde lo corres y las revierte solo. Para calibrar el color contra Mission Control, que es donde importa que destaque: `vitals demo 6b1119 20`
 
 - **CLI `vitals ai`**: salud de las cuentas de IA que usa tri-audit (Claude Code, OpenAI Codex CLI, Google Gemini API). Sin argumentos verifica config y credenciales al instante; con `--live` hace una llamada real a las tres **en paralelo** y reporta latencia:
 
@@ -43,19 +67,39 @@ Codex    ✅ respondió en 6s
 Gemini   ✅ respondió en 3s (gemini-pro-latest)
 ```
 
+## Ítem de barra de menú (opcional)
+
+Un contador siempre visible arriba, sin abrir Mission Control: `🔴 3` cuando hay sesiones esperándote. Al desplegarlo lista todas, y **al hacer clic en una salta a su ventana**.
+
+Requiere [SwiftBar](https://github.com/swiftbar/SwiftBar):
+
+```bash
+brew install --cask swiftbar
+mkdir -p ~/.swiftbar
+ln -sf "$(pwd)/menubar/vitals.5s.sh" ~/.swiftbar/vitals.5s.sh
+defaults write com.ameba.SwiftBar PluginDirectory -string "$HOME/.swiftbar"
+open -a SwiftBar
+```
+
+El plugin no habla con el estado directamente: consume `vitals --porcelain`, una línea TSV por sesión (`estado`, `proyecto`, `segundos`, `uuid`, `badge`), así que cualquier otra barra o script puede usar la misma fuente.
+
+Si usas Bartender o similar, revisa que no esté escondiendo el ícono nuevo — suele ocultar por defecto los que aparecen por primera vez.
+
 ## Cómo funciona
 
 Tres piezas:
 
 1. **`vitals.sh`** (statusline): Claude Code invoca el comando configurado en `statusLine` de `~/.claude/settings.json` en cada refresco, pasándole un JSON por stdin (modelo, ventana de contexto, costo, session_id, workspace...). Con `refreshInterval: 1` se re-ejecuta cada segundo, lo que permite el parpadeo y el conteo de tiempo detenido. La consulta a git se cachea unos segundos para no castigar repos grandes.
 
-2. **`vitals-hook.sh`** (hooks): invocado en los eventos del ciclo de vida de cada sesión. Escribe el estado en `~/.claude/vitals-state/<session_id>` (línea 1: estado, línea 2: directorio del proyecto), pinta el tab de iTerm2 y dispara la notificación de macOS:
+2. **`vitals-hook.sh`** (hooks): invocado en los eventos del ciclo de vida de cada sesión. Escribe el estado en `~/.claude/vitals-state/<session_id>` (línea 1: estado · 2: directorio del proyecto · 3: UUID de sesión de iTerm2, que es lo que permite `vitals go` · 4: PID de `claude`, que es lo que distingue una sesión viva de una terminal cerrada), pinta las señales visuales y dispara la notificación de macOS:
    - `UserPromptSubmit` / `PostToolUse` → `working` (verde)
    - `Stop` / `SessionStart` → `idle` (amarillo)
    - `Notification` → `waiting` (rojo) + notificación si sigue esperando tras `VITALS_NOTIFY_DELAY`
-   - `SessionEnd` → borra el estado y restaura el tab
+   - `SessionEnd` → borra el estado y restaura tab, fondo y badge
 
-3. **`vitals`** (CLI): lee `~/.claude/vitals-state/` y lista todas las sesiones, las que te esperan primero.
+   En cada invocación recoge basura: se van los estados cuyo proceso `claude` ya no existe y los caches sin sesión.
+
+3. **`vitals`** (CLI): lee `~/.claude/vitals-state/`, descarta las sesiones muertas y lista el resto, las que te esperan primero. `vitals go` usa AppleScript para traer al frente la ventana de iTerm2 con ese UUID.
 
 ## Instalación
 
@@ -101,8 +145,9 @@ y descomenta lo que quieras: apagar módulos (`VITALS_COST=0`), cambiar el umbra
 
 ## Requisitos
 
-- macOS (color de tab: iTerm2; notificaciones: `osascript`) — la statusline y el CLI funcionan en cualquier terminal con `bash` y `jq`
-- `jq`
+- macOS: el color de tab, el badge, el rebote del Dock y `vitals go` son de iTerm2; las notificaciones usan `osascript`
+- El **fondo de ventana** funciona además en kitty, WezTerm, Ghostty y xterm: en iTerm2 se usa su secuencia propia y en el resto OSC 11/111, que es el estándar
+- El resto de la statusline y del CLI necesita `bash`, `jq` y el `stat` de BSD (macOS)
 
 ## Ideas / pendientes
 
@@ -118,8 +163,12 @@ y descomenta lo que quieras: apagar módulos (`VITALS_COST=0`), cambiar el umbra
 - [x] Fase de auditoría tri-audit del proyecto (⚖)
 - [x] `vitals ai [--live]`: salud de las 3 cuentas de IA (Claude/Codex/Gemini)
 - [x] Badge 3IA en la statusline con cache y refresco en background cada N horas
+- [x] Fondo de la ventana completa cuando Claude te espera
+- [x] Badge de iTerm2 con estado y proyecto, y rebote del Dock
+- [x] `vitals go`: saltar a la ventana que te espera
+- [x] Descartar sesiones muertas por PID en vez de por antigüedad
+- [x] Ítem de barra de menú con contador y salto de un clic (SwiftBar)
 - [ ] `vitals --watch` (refresco en vivo del resumen)
-- [ ] Soporte para tab color en otras terminales (kitty, WezTerm)
 - [ ] Historial de costo por proyecto
 
 ## Contribuir

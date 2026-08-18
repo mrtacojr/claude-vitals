@@ -13,9 +13,17 @@
 #VITALS_AUDIT=1           # ⚖ fase de la auditoría tri-audit del proyecto (.audit/estado.md)
 #VITALS_AUDIT_CACHE_SECS=15 # cada cuántos segundos re-leer estado.md
 
+## Señales visuales de la ventana (para encontrarla entre muchas)
+#VITALS_WINDOW_BG=1       # pintar el fondo COMPLETO de la ventana cuando Claude te espera
+#VITALS_BG_WAITING=4a1015 # color del fondo en ese estado (hex sin '#')
+#VITALS_BADGE=1           # badge grande de iTerm2 con el estado y el proyecto
+#VITALS_BADGE_TEXT=ESPERA # primera línea del badge
+#VITALS_ATTENTION=once    # rebote del Dock: once | yes (hasta que mires) | fireworks | no
+
 ## Umbrales y tiempos
 #VITALS_CTX_ALERT=80      # % de contexto usado a partir del cual se pinta rojo
 #VITALS_GIT_CACHE_SECS=10 # cada cuántos segundos re-consultar git
+#VITALS_STALE_HOURS=12    # antigüedad tras la cual se descarta un estado sin PID registrado
 
 ## vitals ai (salud de las cuentas de IA)
 #VITALS_AI_TIMEOUT=60     # segundos máximos por IA en `vitals ai --live`

@@ -2,10 +2,14 @@
 # Hook de estado para claude-vitals.
 # Claude Code lo invoca en eventos del ciclo de vida (UserPromptSubmit, Stop,
 # Notification, etc.) pasando un JSON por stdin. Registra el estado de la
-# sesión (línea 1: estado, línea 2: cwd del proyecto), pinta el color del tab
-# de iTerm2 y manda una notificación de macOS si Claude se queda esperando.
+# sesión, pinta las señales visuales de la ventana y manda una notificación de
+# macOS si Claude se queda esperando.
 #
 # Estados: working (verde), idle (amarillo), waiting (rojo, esperando al usuario)
+#
+# Archivo de estado, ~/.claude/vitals-state/<session_id>, 4 líneas:
+#   1: estado · 2: cwd del proyecto · 3: UUID de sesión de iTerm2 · 4: PID de claude
+# Las líneas 3 y 4 son las que permiten `vitals go` y descartar sesiones muertas.
 
 input=$(cat)
 
@@ -16,6 +20,17 @@ configDir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 : "${VITALS_TAB_COLOR:=1}"
 : "${VITALS_NOTIFY:=1}"
 : "${VITALS_NOTIFY_DELAY:=10}"
+: "${VITALS_WINDOW_BG:=1}"
+: "${VITALS_BG_WAITING:=4a1015}"
+: "${VITALS_BADGE:=1}"
+: "${VITALS_BADGE_TEXT:=ESPERA}"
+: "${VITALS_ATTENTION:=once}"
+: "${VITALS_STALE_HOURS:=12}"
+
+# Librería compartida (resolviendo el symlink de instalación)
+self="$0"; [ -L "$self" ] && self="$(readlink "$self")"
+libfile="$(cd "$(dirname "$self")" && pwd)/vitals-lib.sh"
+[ -f "$libfile" ] && . "$libfile"
 
 IFS=$'\t' read -r event session cwd msg <<EOF
 $(echo "$input" | jq -r '[
@@ -30,54 +45,128 @@ EOF
 
 state_dir="$configDir/vitals-state"
 mkdir -p "$state_dir"
+proj=$(basename "${cwd:-sesión}")
+signal_marker="$state_dir/$session.signal"
 
 set_state() {
-  printf '%s\n%s\n' "$1" "$cwd" >"$state_dir/$session"
+  printf '%s\n%s\n%s\n%s\n' \
+    "$1" "$cwd" "$(vitals_iterm_uuid)" "$(vitals_claude_pid)" >"$state_dir/$session"
 }
 
-# Secuencias propietarias de iTerm2 para el color del tab; otras terminales las ignoran
+# Secuencias propietarias de iTerm2 para el color del tab; otras terminales las
+# ignoran. Van por vitals_tty, que resuelve el terminal real de la sesión: los
+# hooks corren sin terminal controlador, así que escribir a /dev/tty no llegaba.
 tab_color() { # r g b
   [ "$VITALS_TAB_COLOR" = 1 ] || return 0
-  { printf '\033]6;1;bg;red;brightness;%d\a\033]6;1;bg;green;brightness;%d\a\033]6;1;bg;blue;brightness;%d\a' "$1" "$2" "$3" >/dev/tty; } 2>/dev/null || true
+  type vitals_tty >/dev/null 2>&1 || return 0
+  vitals_tty '\033]6;1;bg;red;brightness;%d\a\033]6;1;bg;green;brightness;%d\a\033]6;1;bg;blue;brightness;%d\a' "$1" "$2" "$3"
 }
 tab_reset() {
   [ "$VITALS_TAB_COLOR" = 1 ] || return 0
-  { printf '\033]6;1;bg;*;default\a' >/dev/tty; } 2>/dev/null || true
+  type vitals_tty >/dev/null 2>&1 || return 0
+  vitals_tty '\033]6;1;bg;*;default\a'
+}
+
+# ---- Señales de "esta ventana te espera" -------------------------------------
+# Solo se aplican en waiting: con muchas ventanas abiertas, una sola pintada de
+# rojo entre decenas oscuras es la señal más fuerte posible. Si se pintaran los
+# tres estados, el rojo dejaría de destacar.
+# El archivo .signal recuerda que la ventana quedó marcada, para no reescribir
+# al tty en cada PostToolUse y para poder limpiar exactamente una vez.
+signal_on() {
+  type vitals_bg_set >/dev/null 2>&1 || return 0
+  local applied=0
+  [ "$VITALS_WINDOW_BG" = 1 ] && vitals_bg_set "$VITALS_BG_WAITING" && applied=1
+  [ "$VITALS_BADGE" = 1 ] && vitals_badge_set "$VITALS_BADGE_TEXT
+$proj" && applied=1
+  # el rebote del Dock es instantáneo, no deja nada que limpiar después
+  [ "$VITALS_ATTENTION" != no ] && vitals_attention "$VITALS_ATTENTION"
+  [ "$applied" = 1 ] && : >"$signal_marker"
+  return 0
+}
+
+signal_off() {
+  type vitals_bg_reset >/dev/null 2>&1 || return 0
+  [ -f "$signal_marker" ] || return 0
+  [ "$VITALS_WINDOW_BG" = 1 ] && vitals_bg_reset
+  [ "$VITALS_BADGE" = 1 ] && vitals_badge_clear
+  rm -f "$signal_marker"
 }
 
 case "$event" in
   UserPromptSubmit|PostToolUse)
     set_state working
     tab_color 0 190 70
+    signal_off
     ;;
-  Stop|SessionStart)
+  SessionStart)
     set_state idle
     tab_color 235 180 0
+    # Reset incondicional: si una sesión anterior en esta misma ventana murió
+    # sin disparar SessionEnd, su .signal se fue con ella y la ventana quedaría
+    # roja para siempre. Abrir Claude aquí la devuelve a su color.
+    if type vitals_bg_reset >/dev/null 2>&1; then
+      [ "$VITALS_WINDOW_BG" = 1 ] && vitals_bg_reset
+      [ "$VITALS_BADGE" = 1 ] && vitals_badge_clear
+    fi
+    rm -f "$signal_marker"
+    ;;
+  Stop)
+    set_state idle
+    tab_color 235 180 0
+    signal_off
     ;;
   Notification)
     set_state waiting
     tab_color 230 40 40
+    signal_on
     # Notificación de macOS, solo si tras VITALS_NOTIFY_DELAY segundos la sesión
     # sigue esperando (evita ruido cuando respondes de inmediato).
     if [ "$VITALS_NOTIFY" = 1 ] && command -v osascript >/dev/null 2>&1; then
-      proj=$(basename "${cwd:-sesión}")
       body="${msg:-Claude espera tu respuesta}"
       # sin comillas dobles ni backslashes en lo que se interpola a AppleScript
-      proj=${proj//[\"\\]/}; body=${body//[\"\\]/}
+      nproj=${proj//[\"\\]/}; body=${body//[\"\\]/}
       (
         sleep "$VITALS_NOTIFY_DELAY"
         [ "$(head -n 1 "$state_dir/$session" 2>/dev/null)" = waiting ] || exit 0
-        osascript -e "display notification \"$body\" with title \"🔴 $proj\" subtitle \"claude-vitals\" sound name \"Ping\"" >/dev/null 2>&1
+        osascript -e "display notification \"$body\" with title \"🔴 $nproj\" subtitle \"claude-vitals\" sound name \"Ping\"" >/dev/null 2>&1
       ) &
     fi
     ;;
   SessionEnd)
-    rm -f "$state_dir/$session" "$state_dir/$session.git" "$state_dir/$session.audit"
+    signal_off
+    rm -f "$state_dir/$session" "$state_dir/$session.git" \
+          "$state_dir/$session.audit" "$signal_marker"
     tab_reset
     ;;
 esac
 
-# Limpieza de archivos de sesiones viejas
-find "$state_dir" -type f -mtime +2 -delete 2>/dev/null
+# ---- Recolección de basura ---------------------------------------------------
+# Antes se borraba por antigüedad del archivo de estado, cuyo mtime solo avanza
+# con los eventos del hook: una sesión abierta pero inactiva perdía su estado
+# mientras seguía viva, y sus caches quedaban huérfanos para siempre. Ahora la
+# vida de una sesión la define el PID de su proceso claude.
+if type vitals_is_session_file >/dev/null 2>&1; then
+  now=$(date +%s)
+  for f in "$state_dir"/*; do
+    [ -f "$f" ] || continue
+    vitals_is_session_file "$f" || continue
+    pid=$(sed -n 4p "$f")
+    dead=0
+    if [ -n "$pid" ]; then
+      kill -0 "$pid" 2>/dev/null || dead=1
+    else
+      # Escrito por una versión anterior: sin PID, se descarta por antigüedad.
+      mt=$(stat -f %m "$f" 2>/dev/null || echo "$now")
+      [ $((now - mt)) -gt $((VITALS_STALE_HOURS * 3600)) ] && dead=1
+    fi
+    [ "$dead" = 1 ] && rm -f "$f" "$f.git" "$f.audit" "$f.signal"
+  done
+  # Caches cuya sesión ya no existe (huérfanos de versiones anteriores)
+  for c in "$state_dir"/*.git "$state_dir"/*.audit "$state_dir"/*.signal; do
+    [ -e "$c" ] || continue
+    [ -f "${c%.*}" ] || rm -f "$c"
+  done
+fi
 
 exit 0
