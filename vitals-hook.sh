@@ -22,6 +22,8 @@ configDir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 : "${VITALS_NOTIFY_DELAY:=10}"
 : "${VITALS_WINDOW_BG:=1}"
 : "${VITALS_BG_WAITING:=4a1015}"
+: "${VITALS_BG_WORKING:=0f2a18}"
+: "${VITALS_BG_IDLE:=2e2408}"
 : "${VITALS_BADGE:=1}"
 : "${VITALS_BADGE_TEXT:=ESPERA}"
 : "${VITALS_ATTENTION:=once}"
@@ -46,7 +48,6 @@ EOF
 state_dir="$configDir/vitals-state"
 mkdir -p "$state_dir"
 proj=$(basename "${cwd:-sesión}")
-signal_marker="$state_dir/$session.signal"
 
 set_state() {
   printf '%s\n%s\n%s\n%s\n' \
@@ -67,59 +68,61 @@ tab_reset() {
   vitals_tty '\033]6;1;bg;*;default\a'
 }
 
-# ---- Señales de "esta ventana te espera" -------------------------------------
-# Solo se aplican en waiting: con muchas ventanas abiertas, una sola pintada de
-# rojo entre decenas oscuras es la señal más fuerte posible. Si se pintaran los
-# tres estados, el rojo dejaría de destacar.
-# El archivo .signal recuerda que la ventana quedó marcada, para no reescribir
-# al tty en cada PostToolUse y para poder limpiar exactamente una vez.
-signal_on() {
-  type vitals_bg_set >/dev/null 2>&1 || return 0
-  local applied=0
-  [ "$VITALS_WINDOW_BG" = 1 ] && vitals_bg_set "$VITALS_BG_WAITING" && applied=1
-  [ "$VITALS_BADGE" = 1 ] && vitals_badge_set "$VITALS_BADGE_TEXT
-$proj" && applied=1
-  # el rebote del Dock es instantáneo, no deja nada que limpiar después
-  [ "$VITALS_ATTENTION" != no ] && vitals_attention "$VITALS_ATTENTION"
-  [ "$applied" = 1 ] && : >"$signal_marker"
+# ---- Señales visuales de la ventana -----------------------------------------
+# El fondo sigue los tres estados; el badge solo se pone en waiting, que es el
+# único donde importa saber de qué proyecto se trata sin entrar a la ventana.
+# Los marcadores .bg y .badge guardan lo ya aplicado para no reescribir al
+# terminal en cada evento —PostToolUse se dispara muy seguido— y para que una
+# escritura fallida se reintente en vez de darse por buena.
+signals_sync() { # $1 = estado
+  type vitals_bg_sync >/dev/null 2>&1 || return 0
+  [ "$VITALS_WINDOW_BG" = 1 ] && vitals_bg_sync "$1" "$state_dir/$session.bg"
+  if [ "$VITALS_BADGE" = 1 ]; then
+    if [ "$1" = waiting ]; then
+      if [ ! -f "$state_dir/$session.badge" ]; then
+        vitals_badge_set "$VITALS_BADGE_TEXT
+$proj" && : >"$state_dir/$session.badge"
+      fi
+    elif [ -f "$state_dir/$session.badge" ]; then
+      vitals_badge_clear && rm -f "$state_dir/$session.badge"
+    fi
+  fi
   return 0
 }
 
-signal_off() {
+signals_clear() { # devuelve la ventana a su color de perfil y quita el badge
   type vitals_bg_reset >/dev/null 2>&1 || return 0
-  [ -f "$signal_marker" ] || return 0
   [ "$VITALS_WINDOW_BG" = 1 ] && vitals_bg_reset
   [ "$VITALS_BADGE" = 1 ] && vitals_badge_clear
-  rm -f "$signal_marker"
+  rm -f "$state_dir/$session.bg" "$state_dir/$session.badge"
+  return 0
 }
 
 case "$event" in
   UserPromptSubmit|PostToolUse)
     set_state working
     tab_color 0 190 70
-    signal_off
+    signals_sync working
     ;;
   SessionStart)
     set_state idle
     tab_color 235 180 0
-    # Reset incondicional: si una sesión anterior en esta misma ventana murió
-    # sin disparar SessionEnd, su .signal se fue con ella y la ventana quedaría
-    # roja para siempre. Abrir Claude aquí la devuelve a su color.
-    if type vitals_bg_reset >/dev/null 2>&1; then
-      [ "$VITALS_WINDOW_BG" = 1 ] && vitals_bg_reset
-      [ "$VITALS_BADGE" = 1 ] && vitals_badge_clear
-    fi
-    rm -f "$signal_marker"
+    # Los marcadores de la sesión anterior de esta ventana se fueron con ella,
+    # así que aquí no se sabe qué color quedó puesto: se limpia a ciegas y se
+    # vuelve a aplicar. Es lo que rescata una ventana que quedó pintada porque
+    # su sesión murió sin disparar SessionEnd.
+    signals_clear
+    signals_sync idle
     ;;
   Stop)
     set_state idle
     tab_color 235 180 0
-    signal_off
+    signals_sync idle
     ;;
   Notification)
     set_state waiting
     tab_color 230 40 40
-    signal_on
+    signals_sync waiting
     # Notificación de macOS, solo si tras VITALS_NOTIFY_DELAY segundos la sesión
     # sigue esperando (evita ruido cuando respondes de inmediato).
     if [ "$VITALS_NOTIFY" = 1 ] && command -v osascript >/dev/null 2>&1; then
@@ -134,9 +137,8 @@ case "$event" in
     fi
     ;;
   SessionEnd)
-    signal_off
-    rm -f "$state_dir/$session" "$state_dir/$session.git" \
-          "$state_dir/$session.audit" "$signal_marker"
+    signals_clear
+    rm -f "$state_dir/$session" "$state_dir/$session.git" "$state_dir/$session.audit"
     tab_reset
     ;;
 esac
@@ -160,10 +162,10 @@ if type vitals_is_session_file >/dev/null 2>&1; then
       mt=$(stat -f %m "$f" 2>/dev/null || echo "$now")
       [ $((now - mt)) -gt $((VITALS_STALE_HOURS * 3600)) ] && dead=1
     fi
-    [ "$dead" = 1 ] && rm -f "$f" "$f.git" "$f.audit" "$f.signal"
+    [ "$dead" = 1 ] && rm -f "$f" "$f.git" "$f.audit" "$f.bg" "$f.badge"
   done
   # Caches cuya sesión ya no existe (huérfanos de versiones anteriores)
-  for c in "$state_dir"/*.git "$state_dir"/*.audit "$state_dir"/*.signal; do
+  for c in "$state_dir"/*.git "$state_dir"/*.audit "$state_dir"/*.bg "$state_dir"/*.badge; do
     [ -e "$c" ] || continue
     [ -f "${c%.*}" ] || rm -f "$c"
   done

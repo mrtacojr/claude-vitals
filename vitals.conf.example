@@ -14,8 +14,10 @@
 #VITALS_AUDIT_CACHE_SECS=15 # cada cuántos segundos re-leer estado.md
 
 ## Señales visuales de la ventana (para encontrarla entre muchas)
-#VITALS_WINDOW_BG=1       # pintar el fondo COMPLETO de la ventana cuando Claude te espera
-#VITALS_BG_WAITING=4a1015 # color del fondo en ese estado (hex sin '#')
+#VITALS_WINDOW_BG=1       # pintar el fondo COMPLETO de la ventana según el estado
+#VITALS_BG_WAITING=4a1015 # rojo: Claude te espera (hex sin '#'; '-' = no pintar)
+#VITALS_BG_WORKING=0f2a18 # verde: Claude está trabajando
+#VITALS_BG_IDLE=2e2408    # ámbar: sesión detenida
 #VITALS_BADGE=1           # badge grande de iTerm2 con el estado y el proyecto
 #VITALS_BADGE_TEXT=ESPERA # primera línea del badge
 #VITALS_ATTENTION=once    # rebote del Dock: once | yes (hasta que mires) | fireworks | no

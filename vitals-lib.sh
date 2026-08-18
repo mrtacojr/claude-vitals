@@ -79,13 +79,43 @@ vitals_bg_set() { # $1 = color hex sin '#'
 }
 
 vitals_bg_reset() {
-  # 'default' devuelve el color del perfil respetando los colores separados de
-  # modo claro/oscuro. Restaurar con un hex fijo se rompería al cambiar de
-  # apariencia, por eso nunca se hardcodea el color original.
+  # Se emiten las dos: 'SetColors=bg=default' es la de iTerm2 y OSC 111 la
+  # estándar. No basta con la primera —hay builds de iTerm2 que aceptan la
+  # secuencia sin honrar el valor 'default', y entonces la escritura "tiene
+  # éxito" pero la ventana se queda pintada—, así que se manda también la
+  # estándar. Restaurar con un hex fijo no es opción: el perfil puede tener
+  # colores distintos para modo claro y oscuro.
   case "${TERM_PROGRAM:-}" in
-    iTerm.app) vitals_tty '\033]1337;SetColors=bg=default\a' ;;
+    iTerm.app) vitals_tty '\033]1337;SetColors=bg=default\a\033]111\a' ;;
     *)         vitals_tty '\033]111\a' ;;
   esac
+}
+
+# Sincroniza el fondo de la ventana con el estado de la sesión.
+# El marcador guarda el color aplicado, no un simple "pintada sí/no": así se
+# compara contra el que toca y solo se escribe al terminal cuando cambian de
+# verdad. Sin eso habría una escritura por refresco de statusline y otra por
+# cada PostToolUse.
+# Un color vacío o "-" significa "no pintar ese estado", para poder desactivar
+# estados sueltos desde vitals.conf.
+vitals_bg_sync() { # $1 = estado  $2 = ruta del marcador
+  local st="$1" marker="$2" want have
+  case "$st" in
+    waiting) want="${VITALS_BG_WAITING-}" ;;
+    working) want="${VITALS_BG_WORKING-}" ;;
+    *)       want="${VITALS_BG_IDLE-}" ;;
+  esac
+  [ "$want" = "-" ] && want=""
+  have=""
+  [ -f "$marker" ] && read -r have <"$marker"
+  [ "$want" = "$have" ] && return 0
+  if [ -z "$want" ]; then
+    vitals_bg_reset || return 1
+    rm -f "$marker"
+  else
+    vitals_bg_set "$want" || return 1
+    printf '%s\n' "$want" >"$marker"
+  fi
 }
 
 # Badge de iTerm2: texto translúcido grande en la esquina superior derecha.

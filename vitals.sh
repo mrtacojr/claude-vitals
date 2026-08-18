@@ -26,6 +26,8 @@ configDir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 : "${VITALS_WINDOW_BG:=1}"
 : "${VITALS_BADGE:=1}"
 : "${VITALS_BG_WAITING:=4a1015}"
+: "${VITALS_BG_WORKING:=0f2a18}"
+: "${VITALS_BG_IDLE:=2e2408}"
 : "${VITALS_BADGE_TEXT:=ESPERA}"
 
 # Librería compartida (resolviendo el symlink de la statusline)
@@ -120,26 +122,22 @@ if [ "$VITALS_SEMAFORO" = 1 ]; then
 fi
 
 # ---- Reconciliación de las señales visuales de la ventana ----
-# El hook las aplica y las quita en el momento del evento, pero eso deja dos
-# huecos: una sesión que entró en waiting antes de instalar esta versión nunca
-# se pintó, y no va a disparar otro hook justamente hasta que le respondas; y
-# si la escritura al tty falla, la ventana queda marcada de más o de menos.
-# El archivo .signal registra si la ventana está marcada; aquí se compara con
-# el estado real y se corrige en cualquiera de las dos direcciones.
-if type vitals_bg_set >/dev/null 2>&1; then
-  marker="$state_dir/${session_id}.signal"
-  if [ "$state" = waiting ] && [ ! -f "$marker" ]; then
-    # el marcador solo se crea si la escritura al terminal llegó de verdad;
-    # si falla, no se marca y el siguiente refresco lo reintenta
-    applied=0
-    [ "$VITALS_WINDOW_BG" = 1 ] && vitals_bg_set "$VITALS_BG_WAITING" && applied=1
-    [ "$VITALS_BADGE" = 1 ] && vitals_badge_set "$VITALS_BADGE_TEXT
-$(basename "$cwd")" && applied=1
-    [ "$applied" = 1 ] && : >"$marker"
-  elif [ "$state" != waiting ] && [ -f "$marker" ]; then
-    [ "$VITALS_WINDOW_BG" = 1 ] && vitals_bg_reset
-    [ "$VITALS_BADGE" = 1 ] && vitals_badge_clear
-    rm -f "$marker"
+# El hook las aplica en el momento del evento, pero eso deja huecos: una sesión
+# que cambió de estado antes de instalar esta versión nunca se pintó, y si la
+# escritura al terminal falla la ventana queda con el color que no toca.
+# Aquí se compara cada refresco el estado real contra lo aplicado y se corrige.
+# El fondo distingue los tres estados; el badge solo aparece en waiting, que es
+# el único que necesita que sepas de qué proyecto se trata sin entrar.
+if type vitals_bg_sync >/dev/null 2>&1; then
+  [ "$VITALS_WINDOW_BG" = 1 ] && vitals_bg_sync "$state" "$state_dir/${session_id}.bg"
+  if [ "$VITALS_BADGE" = 1 ]; then
+    bmark="$state_dir/${session_id}.badge"
+    if [ "$state" = waiting ] && [ ! -f "$bmark" ]; then
+      vitals_badge_set "$VITALS_BADGE_TEXT
+$(basename "$cwd")" && : >"$bmark"
+    elif [ "$state" != waiting ] && [ -f "$bmark" ]; then
+      vitals_badge_clear && rm -f "$bmark"
+    fi
   fi
 fi
 

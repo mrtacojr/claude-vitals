@@ -19,11 +19,19 @@ Con treinta ventanas abiertas repartidas en varios Spaces, un ícono en la statu
 - **3IA ✓/✗**: salud de las cuentas de IA de tri-audit, sin costo por refresco: la statusline solo muestra el cache del último `vitals ai --live`, y cuando tiene más de `VITALS_AI_TTL_HOURS` (default 5h) dispara **un** re-chequeo en background con candado compartido entre todas las sesiones. Si una IA falló, sale en rojo con su nombre: `3IA ✗ codex`
 - **⚖ tri-audit**: si el proyecto tiene una auditoría tri-audit activa — una metodología de auditoría multi-IA por fases que registra su avance en `.audit/estado.md`, muestra la fase en curso: `⚖ F4` (fase 4 pendiente), `⚖ F2↺` (ciclo de REWORK), `⚖ F7 gate` en amarillo (pausada esperando tu decisión pre-deploy), `⚖ STOP F4` en rojo (stop condition), `⚖ ✓` (iteración completa). También aparece en el CLI `vitals`. Sin `.audit/` no muestra nada
 
-**Cuando Claude te espera, la ventana entera cambia:**
+**La ventana entera cambia de color según el estado:**
 
-- **Fondo de la ventana completa** en rojo oscuro (`#4a1015`) — es la señal con más superficie visible y la única que sigue siendo legible cuando miras 30 ventanas desde Mission Control. Solo se pinta el estado `waiting`: si se pintaran los tres estados, el rojo dejaría de destacar. El color mantiene 11:1 de contraste con el texto, así que puedes seguir trabajando sobre él
-- **Badge de iTerm2** con el estado y el nombre del proyecto en letras grandes, para saber *cuál* proyecto te espera sin entrar a la ventana
-- **Rebote del ícono en el Dock**, visible desde cualquier Space sin abrir Mission Control
+- **Fondo de la ventana completa** — la señal con más superficie visible, y la única que sigue leyéndose cuando miras 30 ventanas desde Mission Control. Los tres colores mantienen ~11:1 de contraste con el texto, así que puedes trabajar sobre ellos sin molestia:
+
+  | Estado | Color | |
+  |---|---|---|
+  | esperándote | `#4a1015` | rojo |
+  | trabajando | `#0f2a18` | verde |
+  | detenida | `#2e2408` | ámbar |
+
+  Cada uno se puede cambiar o desactivar por separado (`VITALS_BG_WORKING=-` deja ese estado sin pintar).
+- **Badge de iTerm2** con el nombre del proyecto en letras grandes, **solo cuando te espera** — es el único estado en el que necesitas saber *cuál* proyecto es sin entrar a la ventana
+- **Rebote del ícono en el Dock**, visible desde cualquier Space sin abrir Mission Control. Solo surte efecto si iTerm2 no es la app activa, que es cuando de verdad hace falta
 
 Todo se revierte solo al responder. Si algo queda pintado porque una sesión murió de golpe, se limpia al abrir Claude en esa ventana, y `vitals reset-colors` es la escotilla manual.
 
@@ -163,7 +171,7 @@ y descomenta lo que quieras: apagar módulos (`VITALS_COST=0`), cambiar el umbra
 - [x] Fase de auditoría tri-audit del proyecto (⚖)
 - [x] `vitals ai [--live]`: salud de las 3 cuentas de IA (Claude/Codex/Gemini)
 - [x] Badge 3IA en la statusline con cache y refresco en background cada N horas
-- [x] Fondo de la ventana completa cuando Claude te espera
+- [x] Fondo de la ventana completa según el estado (rojo/verde/ámbar)
 - [x] Badge de iTerm2 con estado y proyecto, y rebote del Dock
 - [x] `vitals go`: saltar a la ventana que te espera
 - [x] Descartar sesiones muertas por PID en vez de por antigüedad
