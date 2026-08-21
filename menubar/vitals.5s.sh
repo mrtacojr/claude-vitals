@@ -27,7 +27,11 @@ fmt_age() { # segundos -> "45s" / "12m" / "1h05m"
   fi
 }
 
-rows=$("$VITALS" --porcelain 2>/dev/null)
+# Se cambia el tabulador por 0x1F antes de leer: `read` con IFS=tab colapsa
+# tabuladores seguidos, así que una sesión sin badge de auditoría (o sin
+# identidad, escrita por una versión anterior) desplazaba las columnas y el
+# renglón acababa apuntando a la sesión equivocada.
+rows=$("$VITALS" --porcelain 2>/dev/null | tr '\t' '\037')
 
 if [ -z "$rows" ]; then
   echo "◦"
@@ -37,7 +41,7 @@ if [ -z "$rows" ]; then
 fi
 
 waiting=0 working=0 idle=0
-while IFS=$'\t' read -r state _ _ _ _; do
+while IFS=$'\037' read -r state _ _ _ _; do
   case "$state" in
     waiting) waiting=$((waiting + 1)) ;;
     working) working=$((working + 1)) ;;
@@ -58,7 +62,12 @@ fi
 
 echo "---"
 
-while IFS=$'\t' read -r state proj secs uuid badge; do
+# La 4ª columna es la identidad de la sesión: un pane_id de herdr (w2:p3) o un
+# UUID de iTerm2. Aquí no se distingue a propósito —se devuelve tal cual a
+# `vitals go`, que sabe llevar cada una por su puerta: `herdr agent focus` para
+# un panel, AppleScript para una ventana—. Así el plugin sirve a la vez a las
+# sesiones que viven dentro de herdr y a las que no.
+while IFS=$'\037' read -r state proj secs uuid badge; do
   case "$state" in
     waiting) icon="🔴"; color="red" ;;
     working) icon="🟢"; color="" ;;
@@ -71,7 +80,9 @@ while IFS=$'\t' read -r state proj secs uuid badge; do
     OK) label="$label · ⚖ ✓" ;;
     *)  label="$label · ⚖ $badge" ;;
   esac
-  line="$label | bash=\"$VITALS\" param1=go param2=$uuid terminal=false refresh=true"
+  # param2 va entrecomillado: un pane_id lleva ':' y SwiftBar corta el
+  # argumento en el primer espacio si no se le pone comillas.
+  line="$label | bash=\"$VITALS\" param1=go param2=\"$uuid\" terminal=false refresh=true"
   [ -n "$color" ] && line="$line color=$color"
   echo "$line"
 done <<<"$rows"

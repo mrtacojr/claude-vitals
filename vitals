@@ -2,7 +2,7 @@
 # vitals — resumen de tus sesiones de Claude Code y salud de las cuentas de IA.
 #
 #   vitals                resumen de todas las sesiones (las que te esperan primero)
-#   vitals go [n|nombre]  salta a la ventana de la sesión (por defecto, la que te espera)
+#   vitals go [n|nombre]  salta a la sesión (panel de herdr o ventana de iTerm2)
 #   vitals demo [hex] [s]  previsualiza aquí las señales de "te espera" y las revierte
 #   vitals --porcelain    una línea TSV por sesión, para scripts
 #   vitals reset-colors   devuelve esta terminal a su color y quita el badge
@@ -16,12 +16,14 @@ configDir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 state_dir="$configDir/vitals-state"
 
 # Config y librería compartida (resolviendo el symlink de instalación)
+# shellcheck source=/dev/null
 [ -f "$configDir/vitals.conf" ] && . "$configDir/vitals.conf"
 : "${VITALS_AI_TIMEOUT:=60}"
 : "${GEMINI_MODEL:=gemini-pro-latest}"
 
 self="$0"; [ -L "$self" ] && self="$(readlink "$self")"
 libfile="$(cd "$(dirname "$self")" && pwd)/vitals-lib.sh"
+# shellcheck source=/dev/null
 [ -f "$libfile" ] && . "$libfile"
 
 fmt_age() { # segundos -> "45s" / "12m" / "1h05m"
@@ -167,10 +169,20 @@ ai_live() {
 # ======================= inventario de sesiones =======================
 
 # Emite una fila TSV por sesión viva:
-#   orden \t estado \t proyecto \t segundos \t uuid_iterm \t badge_audit
+#   orden \t estado \t proyecto \t segundos \t identidad \t badge_audit \t sidecar
+# La identidad (columna 5) es un pane_id de herdr o un UUID de iTerm2; se
+# distinguen por el ':'. La 7ª columna es interna (la ruta del sidecar con el
+# socket de herdr) y `--porcelain` la recorta: su contrato público son 5 campos.
 # El orden pone primero las que te esperan. Las sesiones cuyo proceso claude ya
 # no existe se descartan aquí: sin esto, una terminal cerrada seguiría gritando
 # "esperando" durante días y `vitals go` saltaría a ventanas fantasma.
+# Entre collect_sessions y quien la consume, la fila viaja separada por 0x1F y no
+# por tabulador: `read` con IFS=tab colapsa tabuladores seguidos —el tabulador es
+# un separador "de espacio en blanco"— y una columna vacía corría todas las
+# demás un lugar a la izquierda. Con una sesión sin badge de auditoría eso metía
+# la ruta del sidecar en la columna del badge; con una sesión vieja sin identidad
+# metía el badge en la columna de la identidad, y `vitals go` intentaba saltar a
+# una ventana llamada "F3". 0x1F no es espacio en blanco, así que no colapsa.
 collect_sessions() {
   local f state cwd uuid pid proj mt now key badge
   now=$(date +%s)
@@ -200,21 +212,21 @@ collect_sessions() {
       badge=$(vitals_audit_badge "$cwd")
     fi
 
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$key" "$state" "$proj" "$((now - mt))" "$uuid" "$badge"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$key" "$state" "$proj" "$((now - mt))" "$uuid" "$badge" "$f.herdr"
   done
 }
 
 cmd_summary() {
   local rows waiting=0 working=0 idle=0 n=0
-  rows=$(collect_sessions | sort -t$'\t' -k1,1n -k4,4nr)
+  rows=$(collect_sessions | sort -t$'\t' -k1,1n -k4,4nr | tr '\t' '\037')
 
   if [ -z "$rows" ]; then
     echo "No hay sesiones de Claude Code activas."
     exit 0
   fi
 
-  while IFS=$'\t' read -r key state proj secs uuid badge; do
+  while IFS=$'\037' read -r key state proj secs uuid badge _sidecar; do
     n=$((n + 1))
     case "$state" in
       waiting) icon="🔴"; label="esperando";  extra="(necesita tu respuesta)"; waiting=$((waiting + 1)) ;;
@@ -266,29 +278,65 @@ end run
 OSA
 }
 
+# Enfoca el panel dentro de herdr y trae al frente la ventana que lo hospeda.
+# Los dos pasos son necesarios y se midió por qué: `herdr agent focus` mueve el
+# foco DENTRO de herdr, pero no levanta la ventana —con Slack al frente, tras
+# enfocar seguía Slack al frente—, y un clic en la barra de menú desde otra app
+# no mostraría nada. El socket va explícito porque SwiftBar lanza el plugin sin
+# el entorno del panel, y sin HERDR_SOCKET_PATH el cliente busca un socket por
+# defecto que no existe (falla con server_not_running, exit 1).
+focus_herdr_pane() { # $1 = pane_id  $2 = ruta del sidecar
+  local sock="" app="" bin=""
+  [ -f "$2" ] && { read -r sock; read -r app; read -r bin; } <"$2"
+  # El PATH de SwiftBar no lleva a herdr (medido), así que primero se intenta la
+  # ruta que la propia sesión anotó y solo después el PATH.
+  [ -x "$bin" ] || bin=$(command -v herdr 2>/dev/null)
+  if [ -z "$bin" ]; then
+    echo "   ...pero no encuentro el binario 'herdr'." >&2
+    return 1
+  fi
+  if [ -n "$sock" ]; then
+    HERDR_SOCKET_PATH="$sock" "$bin" agent focus "$1" >/dev/null 2>&1 || return 1
+  else
+    "$bin" agent focus "$1" >/dev/null 2>&1 || return 1
+  fi
+  # Levantar la ventana es el segundo paso, y su fallo se dice en voz alta en
+  # vez de tragárselo: el panel quedó enfocado, pero puede seguir tapado.
+  app=$(vitals_term_app "${app:-${TERM_PROGRAM:-}}") || {
+    echo "   (no sé qué app hospeda herdr: el panel quedó enfocado pero la ventana no se levantó)" >&2
+    return 0
+  }
+  osascript -e "tell application \"$app\" to activate" >/dev/null 2>&1 ||
+    echo "   (no pude traer $app al frente; el panel sí quedó enfocado)" >&2
+  return 0
+}
+
 cmd_go() { # $1 = índice, parte del nombre del proyecto, o vacío
   local target="${1:-}" rows pick n=0
-  rows=$(collect_sessions | sort -t$'\t' -k1,1n -k4,4nr)
+  rows=$(collect_sessions | sort -t$'\t' -k1,1n -k4,4nr | tr '\t' '\037')
   [ -n "$rows" ] || { echo "No hay sesiones de Claude Code activas."; exit 1; }
 
   if [ -z "$target" ]; then
     # sin argumento: la que lleva más tiempo esperándote
-    pick=$(printf '%s\n' "$rows" | awk -F'\t' '$2 == "waiting" {print; exit}')
+    pick=$(printf '%s\n' "$rows" | awk -F'\037' '$2 == "waiting" {print; exit}')
     [ -n "$pick" ] || { echo "Ninguna sesión te está esperando."; echo; cmd_summary; exit 1; }
-  elif [[ "$target" =~ ^[0-9A-Fa-f-]{36}$ ]]; then
-    # UUID exacto: es como el ítem de barra de menú identifica cada sesión,
-    # porque dos proyectos pueden llamarse igual
-    pick=$(printf '%s\n' "$rows" | awk -F'\t' -v u="$target" '$5 == u {print; exit}')
+  elif [[ "$target" =~ ^[0-9A-Fa-f-]{36}$ ]] || vitals_target_is_pane "$target"; then
+    # Identidad exacta: es como el ítem de barra de menú señala cada sesión,
+    # porque dos proyectos pueden llamarse igual. Las dos formas —UUID de
+    # iTerm2 y pane_id de herdr— entran por aquí: si el pane_id no cayera en
+    # esta rama, `vitals go w2:p3` acabaría buscando un proyecto llamado
+    # "w2:p3" y saltaría a la sesión equivocada, o a ninguna.
+    pick=$(printf '%s\n' "$rows" | awk -F'\037' -v u="$target" '$5 == u {print; exit}')
     [ -n "$pick" ] || { echo "Esa sesión ya no está activa."; exit 1; }
   elif [ "$target" -eq "$target" ] 2>/dev/null; then
     pick=$(printf '%s\n' "$rows" | sed -n "${target}p")
     [ -n "$pick" ] || { echo "No hay una sesión número $target."; exit 1; }
   else
-    pick=$(printf '%s\n' "$rows" | awk -F'\t' -v pat="$target" 'index(tolower($3), tolower(pat)) {print; exit}')
+    pick=$(printf '%s\n' "$rows" | awk -F'\037' -v pat="$target" 'index(tolower($3), tolower(pat)) {print; exit}')
     [ -n "$pick" ] || { echo "Ninguna sesión activa coincide con '$target'."; exit 1; }
   fi
 
-  IFS=$'\t' read -r key state proj secs uuid badge <<<"$pick"
+  IFS=$'\037' read -r key state proj secs uuid badge sidecar <<<"$pick"
 
   if [ -z "$uuid" ]; then
     echo "No sé en qué ventana vive '$proj': su estado lo escribió una versión"
@@ -302,7 +350,15 @@ cmd_go() { # $1 = índice, parte del nombre del proyecto, o vacío
     *)       echo "→ $proj (detenida hace $(fmt_age "$secs"))" ;;
   esac
 
-  if [ "$(focus_iterm_session "$uuid")" != ok ]; then
+  # Una identidad con ':' es un panel de herdr; sin ':', una sesión de iTerm2.
+  # No se mira si ESTE proceso corre bajo herdr: `vitals` puede listar sesiones
+  # de los dos mundos a la vez, y cada una se alcanza por su propia puerta.
+  if vitals_target_is_pane "$uuid"; then
+    focus_herdr_pane "$uuid" "$sidecar" || {
+      echo "   ...pero herdr ya no tiene ese panel."
+      exit 1
+    }
+  elif [ "$(focus_iterm_session "$uuid")" != ok ]; then
     echo "   ...pero iTerm2 ya no tiene esa sesión abierta."
     exit 1
   fi
@@ -321,8 +377,10 @@ case "${1:-}" in
     ;;
   --porcelain)
     # TSV estable para consumidores externos (el ítem de barra de menú):
-    #   estado \t proyecto \t segundos \t uuid \t badge_audit
-    collect_sessions | sort -t$'\t' -k1,1n -k4,4nr | cut -f2-
+    #   estado \t proyecto \t segundos \t identidad \t badge_audit
+    # La identidad es un pane_id de herdr o un UUID de iTerm2; quien la reciba
+    # solo tiene que devolverla tal cual a `vitals go`, que ya sabe distinguir.
+    collect_sessions | sort -t$'\t' -k1,1n -k4,4nr | cut -f2-6
     exit 0
     ;;
   demo)
@@ -334,7 +392,11 @@ case "${1:-}" in
     fi
     hex="${2:-${VITALS_BG_WAITING:-4a1015}}"
     secs="${3:-15}"
-    vitals_bg_set "$hex"
+    if ! vitals_bg_set "$hex"; then
+      echo "Aquí no hay una ventana propia que pintar: dentro de un panel de herdr" >&2
+      echo "las señales de ventana están desactivadas a propósito." >&2
+      exit 1
+    fi
     vitals_badge_set "${VITALS_BADGE_TEXT:-ESPERA}
 $(basename "$PWD")"
     vitals_attention "${VITALS_ATTENTION:-once}"
@@ -349,9 +411,13 @@ $(basename "$PWD")"
     # Escotilla manual: si una terminal quedó pintada porque su sesión murió sin
     # limpiar, esto la devuelve a su color de perfil.
     if type vitals_bg_reset >/dev/null 2>&1; then
-      vitals_bg_reset
-      vitals_badge_clear
-      echo "Fondo y badge de esta terminal restaurados."
+      if vitals_bg_reset; then
+        vitals_badge_clear
+        echo "Fondo y badge de esta terminal restaurados."
+      else
+        echo "Nada que restaurar: dentro de un panel de herdr vitals no pinta la ventana." >&2
+        exit 1
+      fi
     else
       echo "No encuentro vitals-lib.sh junto a $self" >&2
       exit 1

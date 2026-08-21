@@ -1,2 +1,5 @@
 # Notas locales con rutas personales
 *.local.md
+
+# Artefactos de la auditoría 3-IA (contienen rutas locales)
+.audit/

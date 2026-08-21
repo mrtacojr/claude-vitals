@@ -8,14 +8,17 @@
 # Estados: working (verde), idle (amarillo), waiting (rojo, esperando al usuario)
 #
 # Archivo de estado, ~/.claude/vitals-state/<session_id>, 4 líneas:
-#   1: estado · 2: cwd del proyecto · 3: UUID de sesión de iTerm2 · 4: PID de claude
+#   1: estado · 2: cwd del proyecto · 3: identidad de la ventana · 4: PID de claude
 # Las líneas 3 y 4 son las que permiten `vitals go` y descartar sesiones muertas.
+# La línea 3 es el pane_id de herdr (w2:p3) cuando la sesión vive en un panel, y
+# el UUID de iTerm2 cuando no: se distinguen por el ':' que solo el pane_id lleva.
 
 input=$(cat)
 
 configDir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 
 # ---- Config: vitals.conf > variables de entorno > defaults ----
+# shellcheck source=/dev/null
 [ -f "$configDir/vitals.conf" ] && . "$configDir/vitals.conf"
 : "${VITALS_TAB_COLOR:=1}"
 : "${VITALS_NOTIFY:=1}"
@@ -28,19 +31,28 @@ configDir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 : "${VITALS_BADGE_TEXT:=ESPERA}"
 : "${VITALS_ATTENTION:=once}"
 : "${VITALS_STALE_HOURS:=12}"
+: "${VITALS_HERDR_REPORT:=1}"
+: "${VITALS_HERDR_AGENT:=claude}"
 
 # Librería compartida (resolviendo el symlink de instalación)
 self="$0"; [ -L "$self" ] && self="$(readlink "$self")"
 libfile="$(cd "$(dirname "$self")" && pwd)/vitals-lib.sh"
+# shellcheck source=/dev/null
 [ -f "$libfile" ] && . "$libfile"
 
-IFS=$'\t' read -r event session cwd msg <<EOF
+# El separador pasa de tabulador a 0x1F antes de leer: `read` con IFS=tab
+# colapsa tabuladores seguidos, así que un campo vacío en medio (un cwd que no
+# llega, un mensaje sin texto) corría el resto de los valores un lugar. @tsv ya
+# escapa los tabuladores que vinieran dentro de un valor, así que la conversión
+# es segura.
+IFS=$'\037' read -r event session cwd msg ntype <<EOF
 $(echo "$input" | jq -r '[
   (.hook_event_name // ""),
   (.session_id // ""),
   (.cwd // ""),
-  (.message // "")
-] | @tsv')
+  (.message // ""),
+  (.notification_type // "")
+] | @tsv' | tr '\t' '\037')
 EOF
 
 [ -n "$event" ] && [ -n "$session" ] || exit 0
@@ -48,10 +60,27 @@ EOF
 state_dir="$configDir/vitals-state"
 mkdir -p "$state_dir"
 proj=$(basename "${cwd:-sesión}")
+herdr_diag="$state_dir/herdr.log"
+
+# ---- Estado de la sesión, hacia herdr ---------------------------------------
+# vitals tiene la verdad de primera mano; herdr la estaba deduciendo del título
+# del terminal. El fallo no se traga ni tumba la sesión de Claude Code por un
+# problema del multiplexor: queda anotado en herdr.log, que se recorta solo.
+report_state() {
+  [ "$VITALS_HERDR_REPORT" = 1 ] || return 0
+  type vitals_herdr_state >/dev/null 2>&1 || return 0
+  vitals_in_herdr || return 0
+  [ -n "${HERDR_PANE_ID:-}" ] || return 0
+  local hstate
+  hstate=$(vitals_herdr_state "$event" "$ntype") || return 0
+  vitals_herdr "$herdr_diag" pane report-agent "$HERDR_PANE_ID" \
+    --source vitals --agent "$VITALS_HERDR_AGENT" --state "$hstate"
+}
 
 set_state() {
   printf '%s\n%s\n%s\n%s\n' \
-    "$1" "$cwd" "$(vitals_iterm_uuid)" "$(vitals_claude_pid)" >"$state_dir/$session"
+    "$1" "$cwd" "$(vitals_session_target)" "$(vitals_claude_pid)" >"$state_dir/$session"
+  vitals_herdr_sidecar_write "$state_dir/$session.herdr"
 }
 
 # Secuencias propietarias de iTerm2 para el color del tab; otras terminales las
@@ -60,11 +89,13 @@ set_state() {
 tab_color() { # r g b
   [ "$VITALS_TAB_COLOR" = 1 ] || return 0
   type vitals_tty >/dev/null 2>&1 || return 0
+  vitals_in_herdr && return 0   # el tab es de la ventana de herdr, no de la sesión
   vitals_tty '\033]6;1;bg;red;brightness;%d\a\033]6;1;bg;green;brightness;%d\a\033]6;1;bg;blue;brightness;%d\a' "$1" "$2" "$3"
 }
 tab_reset() {
   [ "$VITALS_TAB_COLOR" = 1 ] || return 0
   type vitals_tty >/dev/null 2>&1 || return 0
+  vitals_in_herdr && return 0
   vitals_tty '\033]6;1;bg;*;default\a'
 }
 
@@ -103,6 +134,7 @@ case "$event" in
     set_state working
     tab_color 0 190 70
     signals_sync working
+    report_state
     ;;
   SessionStart)
     set_state idle
@@ -113,16 +145,22 @@ case "$event" in
     # su sesión murió sin disparar SessionEnd.
     signals_clear
     signals_sync idle
+    report_state
     ;;
   Stop)
     set_state idle
     tab_color 235 180 0
     signals_sync idle
+    report_state
     ;;
   Notification)
     set_state waiting
     tab_color 230 40 40
     signals_sync waiting
+    # El estado interno sigue siendo `waiting` para los tres tipos: fuera de
+    # herdr el comportamiento no cambia. Lo que se afina es lo que se le cuenta
+    # a herdr, que es donde el usuario mira con catorce sesiones abiertas.
+    report_state
     # Notificación de macOS, solo si tras VITALS_NOTIFY_DELAY segundos la sesión
     # sigue esperando (evita ruido cuando respondes de inmediato).
     if [ "$VITALS_NOTIFY" = 1 ] && command -v osascript >/dev/null 2>&1; then
@@ -137,8 +175,16 @@ case "$event" in
     fi
     ;;
   SessionEnd)
+    # Soltar la fuente antes de borrar el estado: si no, el sidebar de herdr se
+    # queda enseñando un agente que ya no existe.
+    if [ "$VITALS_HERDR_REPORT" = 1 ] && type vitals_herdr >/dev/null 2>&1 &&
+       vitals_in_herdr && [ -n "${HERDR_PANE_ID:-}" ]; then
+      vitals_herdr "$herdr_diag" pane release-agent "$HERDR_PANE_ID" \
+        --source vitals --agent "$VITALS_HERDR_AGENT"
+    fi
     signals_clear
-    rm -f "$state_dir/$session" "$state_dir/$session.git" "$state_dir/$session.audit"
+    rm -f "$state_dir/$session" "$state_dir/$session.git" "$state_dir/$session.audit" \
+          "$state_dir/$session.herdr"
     tab_reset
     ;;
 esac
@@ -162,10 +208,26 @@ if type vitals_is_session_file >/dev/null 2>&1; then
       mt=$(stat -f %m "$f" 2>/dev/null || echo "$now")
       [ $((now - mt)) -gt $((VITALS_STALE_HOURS * 3600)) ] && dead=1
     fi
-    [ "$dead" = 1 ] && rm -f "$f" "$f.git" "$f.audit" "$f.bg" "$f.badge"
+    if [ "$dead" = 1 ]; then
+      # Una sesión que murió sin disparar SessionEnd —terminal cerrada, kill—
+      # dejaría su agente colgado en el sidebar. Los tokens de metadata caducan
+      # solos por TTL; el agente no, hay que soltarlo. El socket y el binario
+      # salen del sidecar de esa sesión, no del entorno de esta: la que murió
+      # pudo vivir en otro servidor de herdr.
+      p3=$(sed -n 3p "$f")
+      if [ "$VITALS_HERDR_REPORT" = 1 ] && type vitals_herdr >/dev/null 2>&1 &&
+         vitals_target_is_pane "$p3" && [ -f "$f.herdr" ]; then
+        { read -r hsock; read -r _; read -r hbin; } <"$f.herdr"
+        HERDR_SOCKET_PATH="$hsock" HERDR_BIN_PATH="$hbin" \
+          vitals_herdr "$herdr_diag" pane release-agent "$p3" \
+          --source vitals --agent "$VITALS_HERDR_AGENT"
+      fi
+      rm -f "$f" "$f.git" "$f.audit" "$f.bg" "$f.badge" "$f.herdr"
+    fi
   done
   # Caches cuya sesión ya no existe (huérfanos de versiones anteriores)
-  for c in "$state_dir"/*.git "$state_dir"/*.audit "$state_dir"/*.bg "$state_dir"/*.badge; do
+  for c in "$state_dir"/*.git "$state_dir"/*.audit "$state_dir"/*.bg "$state_dir"/*.badge \
+           "$state_dir"/*.herdr; do
     [ -e "$c" ] || continue
     [ -f "${c%.*}" ] || rm -f "$c"
   done

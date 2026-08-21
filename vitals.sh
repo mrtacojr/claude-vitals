@@ -9,6 +9,7 @@ input=$(cat)
 configDir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 
 # ---- Config: vitals.conf > variables de entorno > defaults ----
+# shellcheck source=/dev/null
 [ -f "$configDir/vitals.conf" ] && . "$configDir/vitals.conf"
 : "${VITALS_SEMAFORO:=1}"
 : "${VITALS_MODEL:=1}"
@@ -29,10 +30,13 @@ configDir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 : "${VITALS_BG_WORKING:=0f2a18}"
 : "${VITALS_BG_IDLE:=2e2408}"
 : "${VITALS_BADGE_TEXT:=ESPERA}"
+: "${VITALS_HERDR_METADATA:=1}"
+: "${VITALS_HERDR_METADATA_TTL_MS:=5000}"
 
 # Librería compartida (resolviendo el symlink de la statusline)
 self="$0"; [ -L "$self" ] && self="$(readlink "$self")"
 libfile="$(cd "$(dirname "$self")" && pwd)/vitals-lib.sh"
+# shellcheck source=/dev/null
 [ -f "$libfile" ] && . "$libfile"
 
 # ---- Forward to spacecake if applicable (preserves existing integration) ----
@@ -73,27 +77,38 @@ fmt_age() { # segundos -> "45s" / "12m" / "1h05m"
 # toda sesión viva:
 #   a) una sesión abierta antes de instalar los hooks no tiene archivo, así que
 #      quedaba invisible para `vitals` mientras sus caches se acumulaban;
-#   b) una escrita por una versión anterior lo tiene sin el UUID de iTerm2 ni el
-#      PID (líneas 3 y 4), que son las que hacen posible `vitals go`.
-# El caso (b) importa sobre todo en las sesiones que te esperan: no van a
-# disparar otro hook hasta que les respondas, y para responderles necesitas
+#   b) una escrita por una versión anterior lo tiene sin la identidad de la
+#      ventana ni el PID (líneas 3 y 4), que son las que hacen posible `vitals go`;
+#   c) una escrita antes de que la sesión pasara a vivir en un panel de herdr
+#      lleva en la línea 3 el UUID de iTerm2, que dentro de herdr es el mismo
+#      para todos los paneles y por tanto no sirve para saltar a ninguno.
+# Los casos (b) y (c) importan sobre todo en las sesiones que te esperan: no van
+# a disparar otro hook hasta que les respondas, y para responderles necesitas
 # poder saltar a ellas.
 # Al rellenar se preserva el mtime: es el reloj del tiempo detenido.
 if [ "$session_id" != "-" ] && type vitals_claude_pid >/dev/null 2>&1; then
   sfile0="$state_dir/$session_id"
+  want3="$(vitals_session_target)"
   if [ ! -f "$sfile0" ]; then
     mkdir -p "$state_dir"
     printf 'idle\n%s\n%s\n%s\n' \
-      "$cwd" "$(vitals_iterm_uuid)" "$(vitals_claude_pid)" >"$sfile0"
-  elif [ -z "$(sed -n 3p "$sfile0")" ] || [ -z "$(sed -n 4p "$sfile0")" ]; then
+      "$cwd" "$want3" "$(vitals_claude_pid)" >"$sfile0"
+  elif { [ -n "$want3" ] && [ "$(sed -n 3p "$sfile0")" != "$want3" ]; } ||
+       [ -z "$(sed -n 4p "$sfile0")" ]; then
+    # La identidad solo se pisa cuando hay una mejor que escribir: si esta
+    # sesión no sabe la suya (want3 vacío), se conserva la que ya estaba.
     l1=$(sed -n 1p "$sfile0"); l2=$(sed -n 2p "$sfile0")
     keep_mt=$(stat -f %m "$sfile0" 2>/dev/null)
     [ -n "$l1" ] || l1=idle
     [ -n "$l2" ] || l2="$cwd"
+    [ -n "$want3" ] || want3=$(sed -n 3p "$sfile0")
     printf '%s\n%s\n%s\n%s\n' \
-      "$l1" "$l2" "$(vitals_iterm_uuid)" "$(vitals_claude_pid)" >"$sfile0"
+      "$l1" "$l2" "$want3" "$(vitals_claude_pid)" >"$sfile0"
     [ -n "$keep_mt" ] && touch -m -t "$(date -r "$keep_mt" '+%Y%m%d%H%M.%S')" "$sfile0"
   fi
+  # El socket de herdr y la app dueña de su ventana, para que `vitals go` siga
+  # funcionando cuando lo dispara SwiftBar sin el entorno del panel.
+  vitals_herdr_sidecar_write "$sfile0.herdr"
 fi
 
 # ---- Estado de la sesión, escrito por vitals-hook.sh ----
@@ -238,6 +253,47 @@ fi
 # CLAUDE_CODE_REMOTE_SESSION_ID es el equivalente en sesiones cloud.
 if [ "$VITALS_RC" = 1 ] && { [ -n "$CLAUDE_CODE_BRIDGE_SESSION_ID" ] || [ -n "$CLAUDE_CODE_REMOTE_SESSION_ID" ]; }; then
   parts+=("📡 rc")
+fi
+
+# ---- Telemetría al sidebar de herdr -----------------------------------------
+# El reparto es limpio: herdr sabe dónde vive cada panel, y lo que pasa dentro
+# solo lo sabe vitals. Contexto, costo y salud de las 3 IAs se publican por la
+# puerta oficial de metadata, con TTL corto y sin caché.
+# El TTL es la respuesta al criterio de que un panel muerto no congele datos
+# viejos: se midió que con --ttl-ms 3000 los tokens están a t+1s y ya no están
+# a t+5s. Y es también la razón de no cachear: el dato tiene que reescribirse
+# más rápido de lo que caduca. Cuesta unos 5 ms, así que con catorce sesiones
+# a una llamada por segundo son unos 70 ms/s repartidos entre todas.
+# Va en segundo plano para que un socket lento no congele la statusline. El `&`
+# no basta: el hijo hereda stdout/stderr y quien captura la salida de la
+# statusline con $(...) sigue esperando el EOF de ese descriptor mientras el
+# hijo lo tenga abierto. Por eso se le cierran los tres, igual que al refresco
+# de `ai --live` de arriba. El fallo no se pierde por eso: vitals_herdr captura
+# stderr por su cuenta y lo deja en herdr.log.
+if [ "$VITALS_HERDR_METADATA" = 1 ] && type vitals_herdr >/dev/null 2>&1 &&
+   vitals_in_herdr && [ -n "${HERDR_PANE_ID:-}" ]; then
+  ctx_tok="--"
+  [ "$remaining" != "-" ] && ctx_tok="$(printf '%.0f' "$remaining")% libre"
+  cost_tok="--"
+  [ "$cost" != "-" ] && cost_tok="$(printf '$%.2f' "$cost" 2>/dev/null)"
+  # El mismo cache que alimenta el badge 3IA, leído aquí sin volver a llamar a
+  # ninguna IA. Sin cache todavía, se publica "--": no se inventa un ✓.
+  ia_tok="--"
+  if [ -f "$state_dir/ai-health" ]; then
+    read -r ia_line3 <"$state_dir/ai-health"
+    # Se acumula, no se reasigna: con dos IAs caídas a la vez, reasignar sólo
+    # publicaría la última y el sidebar mentiría por omisión.
+    ia_fails3=""
+    for tok3 in $ia_line3; do
+      case "$tok3" in *:OK:*) : ;; *) ia_fails3+="${tok3%%:*} " ;; esac
+    done
+    ia_tok="✓"
+    [ -n "$ia_fails3" ] && ia_tok="✗ ${ia_fails3% }"
+  fi
+  vitals_herdr "$state_dir/herdr.log" pane report-metadata "$HERDR_PANE_ID" \
+    --source vitals --ttl-ms "$VITALS_HERDR_METADATA_TTL_MS" \
+    --token "ctx=$ctx_tok" --token "cost=$cost_tok" --token "ia=$ia_tok" \
+    </dev/null >/dev/null 2>&1 &
 fi
 
 # ---- Armar la línea ----
