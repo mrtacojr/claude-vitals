@@ -282,6 +282,46 @@ vitals_herdr() { # $1 = archivo de diagnóstico, resto = argumentos de herdr
   return "$rc"
 }
 
+# Publica en el sidebar de herdr los tres datos que solo vitals conoce.
+#
+# Vive aquí, y no en la statusline donde nació, porque la statusline NO basta
+# como vehículo: solo corre cuando Claude Code redibuja el panel, y en un
+# multiplexor los paneles de fondo no se redibujan. Medido con 14 sesiones
+# vivas: publicaba 1. Justo las que no tienes delante —las únicas cuyo contexto
+# y costo necesitas mirar de un vistazo— eran las que nunca aparecían. Ahora el
+# hook republica desde el cache, y los hooks se disparan pase lo que pase con
+# el dibujado.
+vitals_herdr_metadata() { # $1 = log  $2 = pane  $3 = ctx  $4 = cost  $5 = ia
+  local ttl="${VITALS_HERDR_METADATA_TTL_MS:-5000}"
+  # `0*` rechazaría un "0" legítimo, así que aquí solo se filtra lo no numérico.
+  case "$ttl" in '' | *[!0-9]*) ttl=5000 ;; esac
+  # ttl=0 significa «sin caducidad»: el dato vive mientras viva el panel. Es
+  # seguro porque herdr borra de su lista los paneles cerrados, así que no deja
+  # fantasmas; lo que evita es que una sesión quieta se borre del sidebar a los
+  # pocos segundos de dejar de escribir en ella.
+  if [ "$ttl" = 0 ]; then
+    vitals_herdr "$1" pane report-metadata "$2" --source vitals \
+      --token "ctx=$3" --token "cost=$4" --token "ia=$5"
+  else
+    vitals_herdr "$1" pane report-metadata "$2" --source vitals --ttl-ms "$ttl" \
+      --token "ctx=$3" --token "cost=$4" --token "ia=$5"
+  fi
+}
+
+# Cache de los últimos tokens calculados por la statusline, para que el hook
+# pueda republicarlos sin recalcular nada: el payload del hook no trae ni el
+# contexto ni el costo, esos solo llegan por el stdin de la statusline.
+vitals_tok_write() { # $1 = ruta  $2 = ctx  $3 = cost  $4 = ia
+  printf '%s\n%s\n%s\n' "$2" "$3" "$4" >"$1" 2>/dev/null
+}
+
+vitals_tok_read() { # $1 = ruta — imprime los tres valores separados por 0x1F
+  local c1 c2 c3
+  [ -f "$1" ] || return 1
+  { read -r c1 && read -r c2 && read -r c3; } <"$1" || return 1
+  printf '%s\037%s\037%s' "$c1" "$c2" "$c3"
+}
+
 # Traducción de lo que sabe vitals a los estados que acepta herdr.
 # `done` no aparece a propósito: `report-agent --state` no lo acepta, lo deriva
 # herdr por su cuenta. Y `unknown` no es pereza, es lo único honesto para una

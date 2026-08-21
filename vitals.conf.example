@@ -42,6 +42,10 @@
 #VITALS_HERDR_REPORT=1    # reportar el estado de la sesión a `herdr agent list`
 #VITALS_HERDR_AGENT=claude # etiqueta de agente; debe coincidir con la de `herdr agent list`
 #VITALS_HERDR_METADATA=1  # publicar contexto, costo y salud 3IA en el sidebar de herdr
-#VITALS_HERDR_METADATA_TTL_MS=5000 # cuánto viven esos datos si la sesión deja de refrescarlos
+#VITALS_HERDR_METADATA_TTL_MS=5000 # cuánto viven esos datos si la sesión deja de refrescarlos.
+                                   # 0 = sin caducidad: viven mientras viva el panel. Es seguro
+                                   # porque herdr borra de su lista los paneles cerrados. Con un
+                                   # valor corto, una sesión quieta desaparece del sidebar a los
+                                   # pocos segundos, que suele ser justo cuando lo miras.
 #VITALS_HERDR_TIMEOUT_S=2 # plazo de cada llamada a herdr; al agotarse la mata y lo anota en herdr.log.
                           # Déjalo por debajo del timeout del hook en settings.json (5 s por default).

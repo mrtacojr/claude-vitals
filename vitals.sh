@@ -290,10 +290,12 @@ if [ "$VITALS_HERDR_METADATA" = 1 ] && type vitals_herdr >/dev/null 2>&1 &&
     ia_tok="✓"
     [ -n "$ia_fails3" ] && ia_tok="✗ ${ia_fails3% }"
   fi
-  vitals_herdr "$state_dir/herdr.log" pane report-metadata "$HERDR_PANE_ID" \
-    --source vitals --ttl-ms "$VITALS_HERDR_METADATA_TTL_MS" \
-    --token "ctx=$ctx_tok" --token "cost=$cost_tok" --token "ia=$ia_tok" \
-    </dev/null >/dev/null 2>&1 &
+  # El cache se escribe SIEMPRE, aunque la publicación falle: es lo que deja al
+  # hook republicar estos valores cuando el panel esté de fondo y la statusline
+  # ya no corra. Escribirlo no afirma que herdr los tenga; eso lo dice el log.
+  vitals_tok_write "$state_dir/${session_id}.tok" "$ctx_tok" "$cost_tok" "$ia_tok"
+  vitals_herdr_metadata "$state_dir/herdr.log" "$HERDR_PANE_ID" \
+    "$ctx_tok" "$cost_tok" "$ia_tok" </dev/null >/dev/null 2>&1 &
 fi
 
 # ---- Armar la línea ----

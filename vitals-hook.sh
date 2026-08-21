@@ -33,6 +33,7 @@ configDir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 : "${VITALS_STALE_HOURS:=12}"
 : "${VITALS_HERDR_REPORT:=1}"
 : "${VITALS_HERDR_AGENT:=claude}"
+: "${VITALS_HERDR_METADATA:=1}"
 
 # Librería compartida (resolviendo el symlink de instalación)
 self="$0"; [ -L "$self" ] && self="$(readlink "$self")"
@@ -75,6 +76,28 @@ report_state() {
   hstate=$(vitals_herdr_state "$event" "$ntype") || return 0
   vitals_herdr "$herdr_diag" pane report-agent "$HERDR_PANE_ID" \
     --source vitals --agent "$VITALS_HERDR_AGENT" --state "$hstate"
+}
+
+# Republica en el sidebar los últimos valores que dejó la statusline.
+#
+# Sin esto el sidebar solo tenía datos del panel que estuvieras mirando: la
+# statusline no corre en los paneles de fondo porque Claude Code no los
+# redibuja. Aquí no se recalcula nada —el payload del hook no trae contexto ni
+# costo—, se reenvía el cache para refrescar su caducidad.
+#
+# Va en segundo plano y con los tres descriptores cerrados a propósito. El hook
+# tiene 5 s de plazo externo y `report_state` ya puede gastar 2 s: encadenar una
+# segunda llamada síncrona dejaría el peor caso por encima del límite.
+report_metadata() {
+  [ "$VITALS_HERDR_METADATA" = 1 ] || return 0
+  type vitals_herdr_metadata >/dev/null 2>&1 || return 0
+  vitals_in_herdr || return 0
+  [ -n "${HERDR_PANE_ID:-}" ] || return 0
+  local toks ctx cost ia
+  toks=$(vitals_tok_read "$state_dir/$session.tok") || return 0
+  IFS=$'\037' read -r ctx cost ia <<<"$toks"
+  vitals_herdr_metadata "$herdr_diag" "$HERDR_PANE_ID" \
+    "$ctx" "$cost" "$ia" </dev/null >/dev/null 2>&1 &
 }
 
 set_state() {
@@ -135,6 +158,7 @@ case "$event" in
     tab_color 0 190 70
     signals_sync working
     report_state
+    report_metadata
     ;;
   SessionStart)
     set_state idle
@@ -146,12 +170,14 @@ case "$event" in
     signals_clear
     signals_sync idle
     report_state
+    report_metadata
     ;;
   Stop)
     set_state idle
     tab_color 235 180 0
     signals_sync idle
     report_state
+    report_metadata
     ;;
   Notification)
     set_state waiting
@@ -161,6 +187,7 @@ case "$event" in
     # herdr el comportamiento no cambia. Lo que se afina es lo que se le cuenta
     # a herdr, que es donde el usuario mira con catorce sesiones abiertas.
     report_state
+    report_metadata
     # Notificación de macOS, solo si tras VITALS_NOTIFY_DELAY segundos la sesión
     # sigue esperando (evita ruido cuando respondes de inmediato).
     if [ "$VITALS_NOTIFY" = 1 ] && command -v osascript >/dev/null 2>&1; then
@@ -184,7 +211,7 @@ case "$event" in
     fi
     signals_clear
     rm -f "$state_dir/$session" "$state_dir/$session.git" "$state_dir/$session.audit" \
-          "$state_dir/$session.herdr"
+          "$state_dir/$session.herdr" "$state_dir/$session.tok"
     tab_reset
     ;;
 esac
@@ -222,12 +249,12 @@ if type vitals_is_session_file >/dev/null 2>&1; then
           vitals_herdr "$herdr_diag" pane release-agent "$p3" \
           --source vitals --agent "$VITALS_HERDR_AGENT"
       fi
-      rm -f "$f" "$f.git" "$f.audit" "$f.bg" "$f.badge" "$f.herdr"
+      rm -f "$f" "$f.git" "$f.audit" "$f.bg" "$f.badge" "$f.herdr" "$f.tok"
     fi
   done
   # Caches cuya sesión ya no existe (huérfanos de versiones anteriores)
   for c in "$state_dir"/*.git "$state_dir"/*.audit "$state_dir"/*.bg "$state_dir"/*.badge \
-           "$state_dir"/*.herdr; do
+           "$state_dir"/*.herdr "$state_dir"/*.tok; do
     [ -e "$c" ] || continue
     [ -f "${c%.*}" ] || rm -f "$c"
   done
