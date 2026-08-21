@@ -202,21 +202,83 @@ vitals_herdr_log() { # $1 = archivo  $2... = qué pasó
   return 0
 }
 
+# Espera acotada a un proceso hijo: devuelve su código de salida tal cual, o
+# 124 —el mismo número que usa `timeout` de GNU— si hubo que matarlo por agotar
+# el plazo. En este macOS no hay `timeout` ni `gtimeout` (se midió: `command -v`
+# no devuelve nada para ninguno de los dos), así que el plazo se implementa aquí.
+# Sondear en vez de usar el watchdog `( sleep N && kill ) &` de `run_to` en la
+# CLI es deliberado: matar a ese subshell NO mata a su `sleep`, y aquí la
+# llamada ocurre hasta una vez por segundo por sesión, así que cada llamada
+# rápida —el caso normal, medido en ~8 ms— dejaría un proceso colgando detrás.
+# La señal va al GRUPO solo si el hijo es líder de su propio grupo (lo es cuando
+# quien llama abrió un subshell con `set -m`): así muere también lo que el
+# binario haya lanzado por su cuenta, y nunca se le señala un grupo ajeno.
+vitals_wait_to() { # $1 = pid  $2 = plazo en vigésimos de segundo
+  local pid="$1" left="$2" step=0.01 pgid
+  while [ "$left" -gt 0 ]; do
+    kill -0 "$pid" 2>/dev/null || { wait "$pid" 2>/dev/null; return $?; }
+    # El primer sondeo es corto porque una llamada sana vuelve en ~8 ms: así el
+    # caso normal cuesta ~10 ms y no los ~58 que cuesta un `sleep 0.05` real.
+    sleep "$step"
+    step=0.05
+    left=$((left - 1))
+  done
+  pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
+  if [ -n "$pgid" ] && [ "$pgid" = "$pid" ]; then
+    kill -TERM -"$pid" 2>/dev/null; sleep 0.2; kill -KILL -"$pid" 2>/dev/null
+  else
+    kill -TERM "$pid" 2>/dev/null;  sleep 0.2; kill -KILL "$pid" 2>/dev/null
+  fi
+  wait "$pid" 2>/dev/null
+  return 124
+}
+
 # Ejecuta un subcomando de herdr y devuelve su código de salida tal cual, que
 # es fiable: se midió que un target inexistente sale con 1 y un servidor caído
 # también, no con 0. El binario se busca primero por la ruta que herdr inyecta
 # en el panel, porque no está en el PATH de todos los contextos.
+#
+# La llamada va acotada en el tiempo. Un herdr que NO responde es peor que uno
+# caído: sin plazo propio, esta función no volvía nunca por su cuenta, y el
+# único límite vivía fuera de este repo (el `timeout` de los hooks en
+# settings.json, que el usuario puede cambiar o borrar). Cuando ese límite
+# externo mataba al proceso, el binario herdr quedaba huérfano y el fallo no
+# llegaba a herdr.log: desaparecía sin dejar rastro, justo lo que este repo
+# se cansó de esconder. Con plazo propio (2 s por default, muy por encima de
+# los ~8 ms que tarda una llamada real) el rastro se escribe siempre, y se
+# escribe antes de que ningún límite externo alcance a intervenir.
+#
+# El stderr del binario ya no se captura con `$( )`: si el proceso colgado
+# —o algo que él haya lanzado— se queda con el extremo de escritura del pipe,
+# la sustitución de comandos no vuelve aunque matemos al hijo. Va a un archivo
+# junto al log, que se lee y se borra en todos los caminos.
 vitals_herdr() { # $1 = archivo de diagnóstico, resto = argumentos de herdr
-  local diag="$1" bin err rc; shift
+  local diag="$1" bin errf secs rc; shift
   bin="${HERDR_BIN_PATH:-}"
   [ -x "$bin" ] || bin=$(command -v herdr 2>/dev/null)
   if [ -z "$bin" ]; then
     vitals_herdr_log "$diag" "sin binario herdr para: $*"
     return 1
   fi
-  err=$("$bin" "$@" 2>&1 >/dev/null); rc=$?
-  [ "$rc" -eq 0 ] && return 0
-  vitals_herdr_log "$diag" "rc=$rc herdr $* :: $(printf '%s' "$err" | head -n 1)"
+  secs="${VITALS_HERDR_TIMEOUT_S:-2}"
+  # `0*` rechaza también "010": en aritmética de shell eso es octal (8), no 10.
+  case "$secs" in ''|*[!0-9]*|0*) secs=2 ;; esac
+  # El stderr del binario va a un archivo propio de ESTA llamada. `$$` no sirve
+  # para nombrarlo: dos subshells del mismo proceso comparten `$$` (medido), y
+  # se pisarían el diagnóstico entre ellos. Si no se puede crear, la llamada
+  # sigue sin stderr: quedarse sin diagnóstico es malo, no reportar es peor.
+  errf=$(mktemp "$diag.XXXXXX" 2>/dev/null) || errf=/dev/null
+  # `set -m` le da al hijo su propio grupo de proceso, y vive solo dentro de
+  # este subshell: el shell que hizo `source` de esta librería no se entera.
+  # El `2>&1` del subshell es lo que silencia los avisos de job control.
+  ( set -m; "$bin" "$@" >/dev/null 2>"$errf" & vitals_wait_to $! $((secs * 20)) ) >/dev/null 2>&1
+  rc=$?
+  if [ "$rc" -eq 124 ]; then
+    vitals_herdr_log "$diag" "timeout ${secs}s herdr $*"
+  elif [ "$rc" -ne 0 ]; then
+    vitals_herdr_log "$diag" "rc=$rc herdr $* :: $(head -n 1 "$errf" 2>/dev/null)"
+  fi
+  [ "$errf" = /dev/null ] || rm -f "$errf"
   return "$rc"
 }
 
