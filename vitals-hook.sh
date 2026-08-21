@@ -8,14 +8,17 @@
 # Estados: working (verde), idle (amarillo), waiting (rojo, esperando al usuario)
 #
 # Archivo de estado, ~/.claude/vitals-state/<session_id>, 4 líneas:
-#   1: estado · 2: cwd del proyecto · 3: UUID de sesión de iTerm2 · 4: PID de claude
+#   1: estado · 2: cwd del proyecto · 3: identidad de la ventana · 4: PID de claude
 # Las líneas 3 y 4 son las que permiten `vitals go` y descartar sesiones muertas.
+# La línea 3 es el pane_id de herdr (w2:p3) cuando la sesión vive en un panel, y
+# el UUID de iTerm2 cuando no: se distinguen por el ':' que solo el pane_id lleva.
 
 input=$(cat)
 
 configDir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 
 # ---- Config: vitals.conf > variables de entorno > defaults ----
+# shellcheck source=/dev/null
 [ -f "$configDir/vitals.conf" ] && . "$configDir/vitals.conf"
 : "${VITALS_TAB_COLOR:=1}"
 : "${VITALS_NOTIFY:=1}"
@@ -32,6 +35,7 @@ configDir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 # Librería compartida (resolviendo el symlink de instalación)
 self="$0"; [ -L "$self" ] && self="$(readlink "$self")"
 libfile="$(cd "$(dirname "$self")" && pwd)/vitals-lib.sh"
+# shellcheck source=/dev/null
 [ -f "$libfile" ] && . "$libfile"
 
 IFS=$'\t' read -r event session cwd msg <<EOF
@@ -51,7 +55,8 @@ proj=$(basename "${cwd:-sesión}")
 
 set_state() {
   printf '%s\n%s\n%s\n%s\n' \
-    "$1" "$cwd" "$(vitals_iterm_uuid)" "$(vitals_claude_pid)" >"$state_dir/$session"
+    "$1" "$cwd" "$(vitals_session_target)" "$(vitals_claude_pid)" >"$state_dir/$session"
+  vitals_herdr_sidecar_write "$state_dir/$session.herdr"
 }
 
 # Secuencias propietarias de iTerm2 para el color del tab; otras terminales las
@@ -60,11 +65,13 @@ set_state() {
 tab_color() { # r g b
   [ "$VITALS_TAB_COLOR" = 1 ] || return 0
   type vitals_tty >/dev/null 2>&1 || return 0
+  vitals_in_herdr && return 0   # el tab es de la ventana de herdr, no de la sesión
   vitals_tty '\033]6;1;bg;red;brightness;%d\a\033]6;1;bg;green;brightness;%d\a\033]6;1;bg;blue;brightness;%d\a' "$1" "$2" "$3"
 }
 tab_reset() {
   [ "$VITALS_TAB_COLOR" = 1 ] || return 0
   type vitals_tty >/dev/null 2>&1 || return 0
+  vitals_in_herdr && return 0
   vitals_tty '\033]6;1;bg;*;default\a'
 }
 
@@ -138,7 +145,8 @@ case "$event" in
     ;;
   SessionEnd)
     signals_clear
-    rm -f "$state_dir/$session" "$state_dir/$session.git" "$state_dir/$session.audit"
+    rm -f "$state_dir/$session" "$state_dir/$session.git" "$state_dir/$session.audit" \
+          "$state_dir/$session.herdr"
     tab_reset
     ;;
 esac
@@ -162,10 +170,11 @@ if type vitals_is_session_file >/dev/null 2>&1; then
       mt=$(stat -f %m "$f" 2>/dev/null || echo "$now")
       [ $((now - mt)) -gt $((VITALS_STALE_HOURS * 3600)) ] && dead=1
     fi
-    [ "$dead" = 1 ] && rm -f "$f" "$f.git" "$f.audit" "$f.bg" "$f.badge"
+    [ "$dead" = 1 ] && rm -f "$f" "$f.git" "$f.audit" "$f.bg" "$f.badge" "$f.herdr"
   done
   # Caches cuya sesión ya no existe (huérfanos de versiones anteriores)
-  for c in "$state_dir"/*.git "$state_dir"/*.audit "$state_dir"/*.bg "$state_dir"/*.badge; do
+  for c in "$state_dir"/*.git "$state_dir"/*.audit "$state_dir"/*.bg "$state_dir"/*.badge \
+           "$state_dir"/*.herdr; do
     [ -e "$c" ] || continue
     [ -f "${c%.*}" ] || rm -f "$c"
   done

@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # vitals-lib.sh — funciones compartidas entre vitals.sh (statusline),
 # vitals-hook.sh y vitals (CLI). Se carga con `source`; no ejecutar directamente.
 
@@ -31,6 +32,42 @@ vitals_audit_badge() { # $1 = directorio del proyecto
       if (first == 7) out = out " gate"   # el ciclo se pausa antes del deploy
       print out
     }' "$f"
+}
+
+# ===========================================================================
+# Modo herdr
+# ===========================================================================
+# Dentro de un panel de herdr, TERM_PROGRAM y LC_TERMINAL siguen diciendo
+# "iTerm2" porque el panel los hereda del cliente herdr, pero quien interpreta
+# lo que escribimos al terminal es el emulador de herdr, no iTerm2. Y la ventana
+# dejó de ser de la sesión: decenas de paneles comparten una sola. Por eso bajo
+# herdr se apagan todas las señales de ventana, y la identidad de la sesión deja
+# de ser el UUID de iTerm2 —idéntico en todos los paneles, porque lo hereda del
+# cliente— para pasar a ser el pane_id, que sí distingue un panel de otro.
+vitals_in_herdr() { [ "${HERDR_ENV:-}" = 1 ]; }
+
+# La única pregunta válida antes de emitir una secuencia propietaria de iTerm2
+# no es "qué dice TERM_PROGRAM" sino "quién va a leer esto".
+vitals_is_iterm2() {
+  vitals_in_herdr && return 1
+  [ "${TERM_PROGRAM:-}" = iTerm.app ]
+}
+
+# Nombre AppleScript de la app dueña de la ventana donde vive herdr.
+# TERM_PROGRAM miente sobre quién lee las secuencias de escape dentro del panel,
+# pero acierta sobre de quién es la ventana: es justo lo que el panel hereda del
+# cliente herdr. Devuelve 1 si no reconoce la app, para que el llamador no
+# invente un `tell application` que no existe.
+vitals_term_app() { # $1 = valor de TERM_PROGRAM
+  case "$1" in
+    iTerm.app)      printf 'iTerm2' ;;
+    Apple_Terminal) printf 'Terminal' ;;
+    ghostty)        printf 'Ghostty' ;;
+    WezTerm)        printf 'WezTerm' ;;
+    Alacritty)      printf 'Alacritty' ;;
+    kitty)          printf 'kitty' ;;
+    *)              return 1 ;;
+  esac
 }
 
 # ===========================================================================
@@ -72,10 +109,12 @@ vitals_tty() { # $1 = formato de printf, resto = argumentos
 # En iTerm2 se usa la secuencia propietaria; en el resto, OSC 11/111, que es
 # el estándar que entienden kitty, WezTerm, Ghostty y xterm.
 vitals_bg_set() { # $1 = color hex sin '#'
-  case "${TERM_PROGRAM:-}" in
-    iTerm.app) vitals_tty '\033]1337;SetColors=bg=%s\a' "$1" ;;
-    *)         vitals_tty '\033]11;#%s\a' "$1" ;;
-  esac
+  # Bajo herdr no hay ventana de esta sesión que pintar: se devuelve fallo, no
+  # un éxito falso, para que nadie apunte "ya está pintada".
+  vitals_in_herdr && return 1
+  if vitals_is_iterm2; then vitals_tty '\033]1337;SetColors=bg=%s\a' "$1"
+  else                      vitals_tty '\033]11;#%s\a' "$1"
+  fi
 }
 
 vitals_bg_reset() {
@@ -85,10 +124,10 @@ vitals_bg_reset() {
   # éxito" pero la ventana se queda pintada—, así que se manda también la
   # estándar. Restaurar con un hex fijo no es opción: el perfil puede tener
   # colores distintos para modo claro y oscuro.
-  case "${TERM_PROGRAM:-}" in
-    iTerm.app) vitals_tty '\033]1337;SetColors=bg=default\a\033]111\a' ;;
-    *)         vitals_tty '\033]111\a' ;;
-  esac
+  vitals_in_herdr && return 1
+  if vitals_is_iterm2; then vitals_tty '\033]1337;SetColors=bg=default\a\033]111\a'
+  else                      vitals_tty '\033]111\a'
+  fi
 }
 
 # Sincroniza el fondo de la ventana con el estado de la sesión.
@@ -100,6 +139,10 @@ vitals_bg_reset() {
 # estados sueltos desde vitals.conf.
 vitals_bg_sync() { # $1 = estado  $2 = ruta del marcador
   local st="$1" marker="$2" want have
+  # Bajo herdr no hay ventana por sesión: nada que sincronizar. Se borra el
+  # marcador que pudiera haber dejado una versión anterior para que no quede
+  # afirmando un color aplicado que ya nadie mantiene.
+  if vitals_in_herdr; then rm -f "$marker"; return 0; fi
   case "$st" in
     waiting) want="${VITALS_BG_WAITING-}" ;;
     working) want="${VITALS_BG_WORKING-}" ;;
@@ -122,12 +165,12 @@ vitals_bg_sync() { # $1 = estado  $2 = ruta del marcador
 # Se auto-escala hasta el 50% del ancho y 20% del alto de la sesión, así que
 # textos cortos se ven enormes; por eso el formato es "ESTADO\nproyecto".
 vitals_badge_set() { # $1 = texto (puede llevar saltos de línea)
-  [ "${TERM_PROGRAM:-}" = iTerm.app ] || return 1
+  vitals_is_iterm2 || return 1
   vitals_tty '\033]1337;SetBadgeFormat=%s\a' "$(printf '%s' "$1" | base64 | tr -d '\n')"
 }
 
 vitals_badge_clear() {
-  [ "${TERM_PROGRAM:-}" = iTerm.app ] || return 1
+  vitals_is_iterm2 || return 1
   vitals_tty '\033]1337;SetBadgeFormat=\a'
 }
 
@@ -135,7 +178,7 @@ vitals_badge_clear() {
 # Mission Control. once = un rebote · yes = hasta que actives iTerm2 ·
 # fireworks = animación sobre la sesión.
 vitals_attention() { # $1 = once|yes|fireworks
-  [ "${TERM_PROGRAM:-}" = iTerm.app ] || return 1
+  vitals_is_iterm2 || return 1
   vitals_tty '\033]1337;RequestAttention=%s\a' "$1"
 }
 
@@ -149,6 +192,41 @@ vitals_attention() { # $1 = once|yes|fireworks
 vitals_iterm_uuid() {
   [ -n "${ITERM_SESSION_ID:-}" ] || return 0
   printf '%s' "${ITERM_SESSION_ID##*:}"
+}
+
+# Identidad de la sesión para `vitals go`: bajo herdr el pane_id, fuera el UUID
+# de iTerm2. Es lo que va en la línea 3 del archivo de estado; el formato de 4
+# líneas no cambia, cambia lo que significa esa línea.
+# Si HERDR_ENV=1 pero no llega HERDR_PANE_ID, se cae al UUID: es preferible una
+# identidad heredada y ambigua a una vacía, que dejaría la sesión inalcanzable.
+vitals_session_target() {
+  if vitals_in_herdr && [ -n "${HERDR_PANE_ID:-}" ]; then
+    printf '%s' "$HERDR_PANE_ID"
+  else
+    vitals_iterm_uuid
+  fi
+}
+
+# Se discrimina por FORMATO, no por el modo del proceso que lee: un pane_id de
+# herdr lleva ':' (w2:p3) y un UUID de iTerm2 nunca. Así conviven en el mismo
+# directorio los archivos de sesiones dentro y fuera de herdr, y los que dejó
+# una versión anterior.
+vitals_target_is_pane() { # $1 = contenido de la línea 3
+  case "$1" in *:*) return 0 ;; *) return 1 ;; esac
+}
+
+# `vitals go` también lo dispara SwiftBar, que lanza el plugin SIN el entorno
+# del panel: sin HERDR_SOCKET_PATH el cliente busca el socket por defecto, no lo
+# encuentra y falla con server_not_running (medido). Por eso cada sesión bajo
+# herdr deja al lado de su estado el socket de su servidor, la app dueña de la
+# ventana y la ruta del binario —SwiftBar tampoco hereda el PATH que tiene a
+# herdr (comprobado: no está en /usr/bin:/bin:/usr/sbin:/sbin)—. Va en un
+# archivo aparte a propósito: el estado sigue siendo de 4 líneas exactas.
+vitals_herdr_sidecar_write() { # $1 = ruta del sidecar
+  vitals_in_herdr || return 0
+  [ -n "${HERDR_SOCKET_PATH:-}" ] || return 0
+  printf '%s\n%s\n%s\n' \
+    "$HERDR_SOCKET_PATH" "${TERM_PROGRAM:-}" "${HERDR_BIN_PATH:-}" >"$1"
 }
 
 # PID del proceso `claude` que corre esta sesión, subiendo por el árbol desde

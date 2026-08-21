@@ -9,6 +9,7 @@ input=$(cat)
 configDir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 
 # ---- Config: vitals.conf > variables de entorno > defaults ----
+# shellcheck source=/dev/null
 [ -f "$configDir/vitals.conf" ] && . "$configDir/vitals.conf"
 : "${VITALS_SEMAFORO:=1}"
 : "${VITALS_MODEL:=1}"
@@ -33,6 +34,7 @@ configDir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 # Librería compartida (resolviendo el symlink de la statusline)
 self="$0"; [ -L "$self" ] && self="$(readlink "$self")"
 libfile="$(cd "$(dirname "$self")" && pwd)/vitals-lib.sh"
+# shellcheck source=/dev/null
 [ -f "$libfile" ] && . "$libfile"
 
 # ---- Forward to spacecake if applicable (preserves existing integration) ----
@@ -73,27 +75,38 @@ fmt_age() { # segundos -> "45s" / "12m" / "1h05m"
 # toda sesión viva:
 #   a) una sesión abierta antes de instalar los hooks no tiene archivo, así que
 #      quedaba invisible para `vitals` mientras sus caches se acumulaban;
-#   b) una escrita por una versión anterior lo tiene sin el UUID de iTerm2 ni el
-#      PID (líneas 3 y 4), que son las que hacen posible `vitals go`.
-# El caso (b) importa sobre todo en las sesiones que te esperan: no van a
-# disparar otro hook hasta que les respondas, y para responderles necesitas
+#   b) una escrita por una versión anterior lo tiene sin la identidad de la
+#      ventana ni el PID (líneas 3 y 4), que son las que hacen posible `vitals go`;
+#   c) una escrita antes de que la sesión pasara a vivir en un panel de herdr
+#      lleva en la línea 3 el UUID de iTerm2, que dentro de herdr es el mismo
+#      para todos los paneles y por tanto no sirve para saltar a ninguno.
+# Los casos (b) y (c) importan sobre todo en las sesiones que te esperan: no van
+# a disparar otro hook hasta que les respondas, y para responderles necesitas
 # poder saltar a ellas.
 # Al rellenar se preserva el mtime: es el reloj del tiempo detenido.
 if [ "$session_id" != "-" ] && type vitals_claude_pid >/dev/null 2>&1; then
   sfile0="$state_dir/$session_id"
+  want3="$(vitals_session_target)"
   if [ ! -f "$sfile0" ]; then
     mkdir -p "$state_dir"
     printf 'idle\n%s\n%s\n%s\n' \
-      "$cwd" "$(vitals_iterm_uuid)" "$(vitals_claude_pid)" >"$sfile0"
-  elif [ -z "$(sed -n 3p "$sfile0")" ] || [ -z "$(sed -n 4p "$sfile0")" ]; then
+      "$cwd" "$want3" "$(vitals_claude_pid)" >"$sfile0"
+  elif { [ -n "$want3" ] && [ "$(sed -n 3p "$sfile0")" != "$want3" ]; } ||
+       [ -z "$(sed -n 4p "$sfile0")" ]; then
+    # La identidad solo se pisa cuando hay una mejor que escribir: si esta
+    # sesión no sabe la suya (want3 vacío), se conserva la que ya estaba.
     l1=$(sed -n 1p "$sfile0"); l2=$(sed -n 2p "$sfile0")
     keep_mt=$(stat -f %m "$sfile0" 2>/dev/null)
     [ -n "$l1" ] || l1=idle
     [ -n "$l2" ] || l2="$cwd"
+    [ -n "$want3" ] || want3=$(sed -n 3p "$sfile0")
     printf '%s\n%s\n%s\n%s\n' \
-      "$l1" "$l2" "$(vitals_iterm_uuid)" "$(vitals_claude_pid)" >"$sfile0"
+      "$l1" "$l2" "$want3" "$(vitals_claude_pid)" >"$sfile0"
     [ -n "$keep_mt" ] && touch -m -t "$(date -r "$keep_mt" '+%Y%m%d%H%M.%S')" "$sfile0"
   fi
+  # El socket de herdr y la app dueña de su ventana, para que `vitals go` siga
+  # funcionando cuando lo dispara SwiftBar sin el entorno del panel.
+  vitals_herdr_sidecar_write "$sfile0.herdr"
 fi
 
 # ---- Estado de la sesión, escrito por vitals-hook.sh ----
