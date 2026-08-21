@@ -183,6 +183,71 @@ vitals_attention() { # $1 = once|yes|fireworks
 }
 
 # ===========================================================================
+# Reporte a herdr
+# ===========================================================================
+# herdr deduce en qué estado está un panel leyendo el título de su terminal.
+# vitals no lo deduce: se lo dice Claude Code. Reportarlo por la puerta oficial
+# es lo que hace que `herdr agent list` deje de contradecir a la realidad.
+
+# Diagnóstico acotado de los fallos de herdr. Un `2>/dev/null` ciego escondería
+# justo la clase de fallo que este repo ya se cansó de esconder, y un archivo
+# que crece sin freno es otra manera de romperle la máquina al usuario: se
+# recorta solo.
+vitals_herdr_log() { # $1 = archivo  $2... = qué pasó
+  local f="$1" n; shift
+  printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >>"$f" 2>/dev/null || return 0
+  n=$(wc -l <"$f" 2>/dev/null) || return 0
+  [ "${n:-0}" -le 40 ] && return 0
+  tail -n 20 "$f" >"$f.new" 2>/dev/null && mv -f "$f.new" "$f" 2>/dev/null
+  return 0
+}
+
+# Ejecuta un subcomando de herdr y devuelve su código de salida tal cual, que
+# es fiable: se midió que un target inexistente sale con 1 y un servidor caído
+# también, no con 0. El binario se busca primero por la ruta que herdr inyecta
+# en el panel, porque no está en el PATH de todos los contextos.
+vitals_herdr() { # $1 = archivo de diagnóstico, resto = argumentos de herdr
+  local diag="$1" bin err rc; shift
+  bin="${HERDR_BIN_PATH:-}"
+  [ -x "$bin" ] || bin=$(command -v herdr 2>/dev/null)
+  if [ -z "$bin" ]; then
+    vitals_herdr_log "$diag" "sin binario herdr para: $*"
+    return 1
+  fi
+  err=$("$bin" "$@" 2>&1 >/dev/null); rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  vitals_herdr_log "$diag" "rc=$rc herdr $* :: $(printf '%s' "$err" | head -n 1)"
+  return "$rc"
+}
+
+# Traducción de lo que sabe vitals a los estados que acepta herdr.
+# `done` no aparece a propósito: `report-agent --state` no lo acepta, lo deriva
+# herdr por su cuenta. Y `unknown` no es pereza, es lo único honesto para una
+# notificación cuyo tipo no reconocemos: mejor que inventar un bloqueo que no
+# existe o esconder uno que sí.
+#
+# El tipo NO se adivina leyendo el texto del mensaje: Claude Code manda el campo
+# notification_type en el payload del hook, ya estructurado. Ahí estaba el
+# defecto que declaraba bloqueadas a once sesiones cuando lo único que había
+# pasado es que llevaban sesenta segundos sin que nadie las mirara: eso es
+# idle_prompt, no permission_prompt.
+vitals_herdr_state() { # $1 = evento del hook  $2 = notification_type
+  case "$1" in
+    UserPromptSubmit|PostToolUse) printf working ;;
+    SessionStart|Stop)            printf idle ;;
+    Notification)
+      case "$2" in
+        permission_prompt|worker_permission_prompt|agent_needs_input|quota_auto_resume_stale)
+          printf blocked ;;
+        idle_prompt|agent_completed|quota_auto_resume_fired)
+          printf idle ;;
+        *)  printf unknown ;;
+      esac ;;
+    *) return 1 ;;
+  esac
+}
+
+# ===========================================================================
 # Sesiones: identidad y liveness
 # ===========================================================================
 

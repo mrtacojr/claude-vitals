@@ -37,3 +37,9 @@
 #VITALS_TAB_COLOR=1       # pintar el tab de iTerm2 según estado
 #VITALS_NOTIFY=1          # notificación de macOS cuando una sesión queda esperando
 #VITALS_NOTIFY_DELAY=10   # segundos esperando antes de notificar (anti-ruido)
+
+## herdr (solo aplica dentro de un panel de herdr; fuera no hace nada)
+#VITALS_HERDR_REPORT=1    # reportar el estado de la sesión a `herdr agent list`
+#VITALS_HERDR_AGENT=claude # etiqueta de agente; debe coincidir con la de `herdr agent list`
+#VITALS_HERDR_METADATA=1  # publicar contexto, costo y salud 3IA en el sidebar de herdr
+#VITALS_HERDR_METADATA_TTL_MS=5000 # cuánto viven esos datos si la sesión deja de refrescarlos

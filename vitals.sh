@@ -30,6 +30,8 @@ configDir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 : "${VITALS_BG_WORKING:=0f2a18}"
 : "${VITALS_BG_IDLE:=2e2408}"
 : "${VITALS_BADGE_TEXT:=ESPERA}"
+: "${VITALS_HERDR_METADATA:=1}"
+: "${VITALS_HERDR_METADATA_TTL_MS:=5000}"
 
 # Librería compartida (resolviendo el symlink de la statusline)
 self="$0"; [ -L "$self" ] && self="$(readlink "$self")"
@@ -251,6 +253,38 @@ fi
 # CLAUDE_CODE_REMOTE_SESSION_ID es el equivalente en sesiones cloud.
 if [ "$VITALS_RC" = 1 ] && { [ -n "$CLAUDE_CODE_BRIDGE_SESSION_ID" ] || [ -n "$CLAUDE_CODE_REMOTE_SESSION_ID" ]; }; then
   parts+=("📡 rc")
+fi
+
+# ---- Telemetría al sidebar de herdr -----------------------------------------
+# El reparto es limpio: herdr sabe dónde vive cada panel, y lo que pasa dentro
+# solo lo sabe vitals. Contexto, costo y salud de las 3 IAs se publican por la
+# puerta oficial de metadata, con TTL corto y sin caché.
+# El TTL es la respuesta al criterio de que un panel muerto no congele datos
+# viejos: se midió que con --ttl-ms 3000 los tokens están a t+1s y ya no están
+# a t+5s. Y es también la razón de no cachear: el dato tiene que reescribirse
+# más rápido de lo que caduca. Cuesta unos 5 ms, así que con catorce sesiones
+# a una llamada por segundo son unos 70 ms/s repartidos entre todas.
+# Va en segundo plano para que un socket lento no congele la statusline; el
+# fallo no se pierde por eso, vitals_herdr lo deja en herdr.log.
+if [ "$VITALS_HERDR_METADATA" = 1 ] && type vitals_herdr >/dev/null 2>&1 &&
+   vitals_in_herdr && [ -n "${HERDR_PANE_ID:-}" ]; then
+  ctx_tok="--"
+  [ "$remaining" != "-" ] && ctx_tok="$(printf '%.0f' "$remaining")% libre"
+  cost_tok="--"
+  [ "$cost" != "-" ] && cost_tok="$(printf '$%.2f' "$cost" 2>/dev/null)"
+  # El mismo cache que alimenta el badge 3IA, leído aquí sin volver a llamar a
+  # ninguna IA. Sin cache todavía, se publica "--": no se inventa un ✓.
+  ia_tok="--"
+  if [ -f "$state_dir/ai-health" ]; then
+    read -r ia_line3 <"$state_dir/ai-health"
+    ia_tok="✓"
+    for tok3 in $ia_line3; do
+      case "$tok3" in *:OK:*) : ;; *) ia_tok="✗ ${tok3%%:*}" ;; esac
+    done
+  fi
+  vitals_herdr "$state_dir/herdr.log" pane report-metadata "$HERDR_PANE_ID" \
+    --source vitals --ttl-ms "$VITALS_HERDR_METADATA_TTL_MS" \
+    --token "ctx=$ctx_tok" --token "cost=$cost_tok" --token "ia=$ia_tok" &
 fi
 
 # ---- Armar la línea ----

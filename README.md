@@ -99,7 +99,7 @@ Tres piezas:
 
 1. **`vitals.sh`** (statusline): Claude Code invoca el comando configurado en `statusLine` de `~/.claude/settings.json` en cada refresco, pasándole un JSON por stdin (modelo, ventana de contexto, costo, session_id, workspace...). Con `refreshInterval: 1` se re-ejecuta cada segundo, lo que permite el parpadeo y el conteo de tiempo detenido. La consulta a git se cachea unos segundos para no castigar repos grandes.
 
-2. **`vitals-hook.sh`** (hooks): invocado en los eventos del ciclo de vida de cada sesión. Escribe el estado en `~/.claude/vitals-state/<session_id>` (línea 1: estado · 2: directorio del proyecto · 3: UUID de sesión de iTerm2, que es lo que permite `vitals go` · 4: PID de `claude`, que es lo que distingue una sesión viva de una terminal cerrada), pinta las señales visuales y dispara la notificación de macOS:
+2. **`vitals-hook.sh`** (hooks): invocado en los eventos del ciclo de vida de cada sesión. Escribe el estado en `~/.claude/vitals-state/<session_id>` (línea 1: estado · 2: directorio del proyecto · 3: identidad de la ventana —el `pane_id` de herdr si la sesión vive en un panel, el UUID de iTerm2 si no— que es lo que permite `vitals go` · 4: PID de `claude`, que es lo que distingue una sesión viva de una terminal cerrada), pinta las señales visuales y dispara la notificación de macOS:
    - `UserPromptSubmit` / `PostToolUse` → `working` (verde)
    - `Stop` / `SessionStart` → `idle` (amarillo)
    - `Notification` → `waiting` (rojo) + notificación si sigue esperando tras `VITALS_NOTIFY_DELAY`
@@ -107,7 +107,57 @@ Tres piezas:
 
    En cada invocación recoge basura: se van los estados cuyo proceso `claude` ya no existe y los caches sin sesión.
 
-3. **`vitals`** (CLI): lee `~/.claude/vitals-state/`, descarta las sesiones muertas y lista el resto, las que te esperan primero. `vitals go` usa AppleScript para traer al frente la ventana de iTerm2 con ese UUID.
+3. **`vitals`** (CLI): lee `~/.claude/vitals-state/`, descarta las sesiones muertas y lista el resto, las que te esperan primero. `vitals go` trae al frente la sesión: con AppleScript si vive en una ventana de iTerm2, con `herdr agent focus` si vive en un panel de herdr.
+
+## Dentro de herdr
+
+[herdr](https://github.com/humanlayer/herdr) mete muchas sesiones de agente en
+una sola ventana. Eso deja sin sentido a media herramienta: el fondo de ventana,
+el badge y el color de tab son señales de *ventana*, y ahí catorce sesiones
+comparten una. vitals lo detecta por `HERDR_ENV=1` y se reparte el trabajo:
+
+- **herdr manda en el exterior** de la sesión: dónde vive y cómo llegar. Bajo
+  herdr, vitals apaga fondo, badge, tab y rebote del Dock, y no emite ni una
+  secuencia propietaria de iTerm2 —aunque `TERM_PROGRAM` siga diciendo
+  `iTerm.app`, porque el panel lo hereda del cliente y ahí quien lee no es
+  iTerm2—. `vitals go` y el clic en la barra de menú delegan en
+  `herdr agent focus`, y además levantan la ventana que hospeda a herdr, que
+  `agent focus` por sí solo no hace.
+- **vitals manda en el interior**: contexto, costo, modelo, rama git y salud de
+  las 3 cuentas de IA. herdr no ve nada de eso, así que la statusline lo publica
+  como tokens de metadata con un TTL corto: si la sesión muere, sus datos se van
+  solos y el sidebar no se queda enseñando un contexto de hace media hora.
+
+vitals también le dice a herdr en qué estado está cada sesión, que lo sabe de
+primera mano porque se lo cuenta Claude Code, en vez de que herdr lo deduzca
+leyendo el título del terminal. La clasificación sale del campo
+`notification_type` del payload del hook, no de adivinar sobre el texto: una
+notificación de inactividad (`idle_prompt`) ya no se confunde con una sesión
+bloqueada esperando permiso (`permission_prompt`).
+
+Fuera de herdr no cambia absolutamente nada.
+
+### Ver el contexto y el costo en el sidebar de herdr
+
+vitals **no** toca la configuración de herdr. Si quieres esos datos en el
+sidebar, pega esto en tu `config.toml` de herdr:
+
+```toml
+[ui.sidebar.agents.rows_by_agent]
+claude = [
+  ["state_icon", "workspace", "tab"],
+  ["terminal_title_stripped"],
+  ["$ctx", "$cost"],
+  ["$ia"],
+]
+```
+
+`$ctx`, `$cost` y `$ia` son los tokens que publica vitals. La clave (`claude`)
+tiene que coincidir con la etiqueta que muestre `herdr agent list`; si en tu
+caso es otra, cámbiala también en `VITALS_HERDR_AGENT`.
+
+Los fallos al hablar con herdr no se pierden ni tumban la sesión: quedan en
+`~/.claude/vitals-state/herdr.log`, que se recorta solo.
 
 ## Instalación
 
@@ -154,6 +204,7 @@ y descomenta lo que quieras: apagar módulos (`VITALS_COST=0`), cambiar el umbra
 ## Requisitos
 
 - macOS: el color de tab, el badge, el rebote del Dock y `vitals go` son de iTerm2; las notificaciones usan `osascript`
+- Dentro de [herdr](https://github.com/humanlayer/herdr) esas señales se apagan solas y `vitals go` usa `herdr agent focus`; no hace falta configurar nada
 - El **fondo de ventana** funciona además en kitty, WezTerm, Ghostty y xterm: en iTerm2 se usa su secuencia propia y en el resto OSC 11/111, que es el estándar
 - El resto de la statusline y del CLI necesita `bash`, `jq` y el `stat` de BSD (macOS)
 
