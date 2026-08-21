@@ -264,8 +264,12 @@ fi
 # a t+5s. Y es también la razón de no cachear: el dato tiene que reescribirse
 # más rápido de lo que caduca. Cuesta unos 5 ms, así que con catorce sesiones
 # a una llamada por segundo son unos 70 ms/s repartidos entre todas.
-# Va en segundo plano para que un socket lento no congele la statusline; el
-# fallo no se pierde por eso, vitals_herdr lo deja en herdr.log.
+# Va en segundo plano para que un socket lento no congele la statusline. El `&`
+# no basta: el hijo hereda stdout/stderr y quien captura la salida de la
+# statusline con $(...) sigue esperando el EOF de ese descriptor mientras el
+# hijo lo tenga abierto. Por eso se le cierran los tres, igual que al refresco
+# de `ai --live` de arriba. El fallo no se pierde por eso: vitals_herdr captura
+# stderr por su cuenta y lo deja en herdr.log.
 if [ "$VITALS_HERDR_METADATA" = 1 ] && type vitals_herdr >/dev/null 2>&1 &&
    vitals_in_herdr && [ -n "${HERDR_PANE_ID:-}" ]; then
   ctx_tok="--"
@@ -277,14 +281,19 @@ if [ "$VITALS_HERDR_METADATA" = 1 ] && type vitals_herdr >/dev/null 2>&1 &&
   ia_tok="--"
   if [ -f "$state_dir/ai-health" ]; then
     read -r ia_line3 <"$state_dir/ai-health"
-    ia_tok="✓"
+    # Se acumula, no se reasigna: con dos IAs caídas a la vez, reasignar sólo
+    # publicaría la última y el sidebar mentiría por omisión.
+    ia_fails3=""
     for tok3 in $ia_line3; do
-      case "$tok3" in *:OK:*) : ;; *) ia_tok="✗ ${tok3%%:*}" ;; esac
+      case "$tok3" in *:OK:*) : ;; *) ia_fails3+="${tok3%%:*} " ;; esac
     done
+    ia_tok="✓"
+    [ -n "$ia_fails3" ] && ia_tok="✗ ${ia_fails3% }"
   fi
   vitals_herdr "$state_dir/herdr.log" pane report-metadata "$HERDR_PANE_ID" \
     --source vitals --ttl-ms "$VITALS_HERDR_METADATA_TTL_MS" \
-    --token "ctx=$ctx_tok" --token "cost=$cost_tok" --token "ia=$ia_tok" &
+    --token "ctx=$ctx_tok" --token "cost=$cost_tok" --token "ia=$ia_tok" \
+    </dev/null >/dev/null 2>&1 &
 fi
 
 # ---- Armar la línea ----
