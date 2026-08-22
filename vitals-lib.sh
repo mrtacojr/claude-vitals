@@ -253,7 +253,20 @@ vitals_wait_to() { # $1 = pid  $2 = plazo en vigésimos de segundo
 # la sustitución de comandos no vuelve aunque matemos al hijo. Va a un archivo
 # junto al log, que se lee y se borra en todos los caminos.
 vitals_herdr() { # $1 = archivo de diagnóstico, resto = argumentos de herdr
-  local diag="$1" bin errf secs rc; shift
+  local diag="$1"; shift
+  vitals_herdr_to "$diag" /dev/null "$@"
+}
+
+# Igual que vitals_herdr, pero conserva la salida del binario en un archivo del
+# llamador en vez de tirarla. Existe porque hay subcomandos de consulta —`pane
+# get`, `pane list`, `pane process-info`— cuya respuesta JSON es justo lo que se
+# necesita, y no se puede leer con `$( )`: si el proceso colgado se queda con el
+# extremo de escritura del pipe, la sustitución de comandos no vuelve aunque
+# matemos al hijo. Por eso va a un archivo, igual que ya iba el stderr.
+# El llamador crea y borra ese archivo, y valida lo que quedó dentro: si hubo
+# timeout, lo escrito puede estar a medias.
+vitals_herdr_to() { # $1 = diagnóstico  $2 = archivo de salida  resto = argumentos
+  local diag="$1" out="$2" bin errf secs rc; shift 2
   bin="${HERDR_BIN_PATH:-}"
   [ -x "$bin" ] || bin=$(command -v herdr 2>/dev/null)
   if [ -z "$bin" ]; then
@@ -271,7 +284,7 @@ vitals_herdr() { # $1 = archivo de diagnóstico, resto = argumentos de herdr
   # `set -m` le da al hijo su propio grupo de proceso, y vive solo dentro de
   # este subshell: el shell que hizo `source` de esta librería no se entera.
   # El `2>&1` del subshell es lo que silencia los avisos de job control.
-  ( set -m; "$bin" "$@" >/dev/null 2>"$errf" & vitals_wait_to $! $((secs * 20)) ) >/dev/null 2>&1
+  ( set -m; "$bin" "$@" >"$out" 2>"$errf" & vitals_wait_to $! $((secs * 20)) ) >/dev/null 2>&1
   rc=$?
   if [ "$rc" -eq 124 ]; then
     vitals_herdr_log "$diag" "timeout ${secs}s herdr $*"
@@ -346,6 +359,34 @@ vitals_herdr_state() { # $1 = evento del hook  $2 = notification_type
         *)  printf unknown ;;
       esac ;;
     *) return 1 ;;
+  esac
+}
+
+# El estado INTERNO de vitals (working/waiting/idle) sale de la MISMA tabla que
+# alimenta a herdr. Una sola tabla, dos vocabularios.
+#
+# No es una elección de estilo: el defecto que esto repara era exactamente una
+# segunda tabla. Una ronda anterior afinó lo que se le cuenta a herdr y dejó
+# intacto el `set_state waiting` del hook, así que vitals decía "13 esperándote"
+# mientras herdr decía "0 bloqueadas" — y ninguna de esas sesiones llevaba 30
+# horas esperando al usuario, llevaban 30 horas quietas. Dos tablas vuelven a
+# divergir; una sola no puede, y el conteo de `waiting` pasa a ser idéntico al
+# de `blocked` por construcción y no por vigilancia.
+#
+# `unknown` devuelve CADENA VACÍA, que significa "no cambiar el estado que ya
+# había". Un tipo de notificación que no entendemos no es información sobre si
+# Claude te necesita: poner `waiting` es el falso positivo que se está
+# arreglando, y poner `idle` borraría un `permission_prompt` real que siguiera
+# vigente. Es también la degradación segura cuando una versión futura de Claude
+# Code invente un notification_type nuevo.
+vitals_state_internal() { # $1 = evento del hook  $2 = notification_type
+  local h
+  h=$(vitals_herdr_state "$1" "$2") || return 1
+  case "$h" in
+    blocked) printf waiting ;;
+    working) printf working ;;
+    idle)    printf idle ;;
+    *)       return 0 ;;   # unknown -> "" -> conservar el estado anterior
   esac
 }
 

@@ -23,6 +23,7 @@ configDir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 : "${VITALS_TAB_COLOR:=1}"
 : "${VITALS_NOTIFY:=1}"
 : "${VITALS_NOTIFY_DELAY:=10}"
+: "${VITALS_NOTIFY_TITLE_MAX:=60}"
 : "${VITALS_WINDOW_BG:=1}"
 : "${VITALS_BG_WAITING:=4a1015}"
 : "${VITALS_BG_WORKING:=0f2a18}"
@@ -35,11 +36,19 @@ configDir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 : "${VITALS_HERDR_AGENT:=claude}"
 : "${VITALS_HERDR_METADATA:=1}"
 
-# Librería compartida (resolviendo el symlink de instalación)
+# Librería compartida (resolviendo el symlink de instalación).
+# Sin ella este hook no puede hacer nada correcto: escribiría un estado con la
+# identidad y el PID en blanco —y con rc=0, que es la peor combinación— y esa
+# sesión quedaría como una fila fantasma que nada vuelve a descartar. El fallo
+# se dice en voz alta y se propaga, que es la regla de este repo.
 self="$0"; [ -L "$self" ] && self="$(readlink "$self")"
 libfile="$(cd "$(dirname "$self")" && pwd)/vitals-lib.sh"
+if [ ! -f "$libfile" ]; then
+  echo "claude-vitals: falta vitals-lib.sh junto a $self" >&2
+  exit 1
+fi
 # shellcheck source=/dev/null
-[ -f "$libfile" ] && . "$libfile"
+. "$libfile"
 
 # El separador pasa de tabulador a 0x1F antes de leer: `read` con IFS=tab
 # colapsa tabuladores seguidos, así que un campo vacío en medio (un cwd que no
@@ -144,6 +153,48 @@ $proj" && : >"$state_dir/$session.badge"
   return 0
 }
 
+# ---- Título de la notificación ----------------------------------------------
+# Quién es esta sesión, dicho en una línea.
+#
+# `basename(cwd)` no identifica nada cuando el proyecto es un directorio
+# genérico: cuatro sesiones distintas corriendo en ~/Documents daban cuatro
+# avisos que decían "Documents". Bajo herdr sí existe un nombre útil —el título
+# del panel, que es el resumen de la conversación que herdr ya muestra en su
+# sidebar—, así que se pide ahí y `basename(cwd)` queda de reserva. Fuera de
+# herdr no hay a quién preguntarle y el título no cambia.
+#
+# Esto NO encarece el camino síncrono del hook: se llama desde dentro del
+# subshell que ya duerme VITALS_NOTIFY_DELAY segundos, o sea muy después de que
+# el hook terminó y fuera de su plazo de 5 s. Por eso tampoco se cachea: un
+# cache aquí solo podría mentir —el título cambia con la conversación— y no
+# compraría nada (la llamada se midió en ~4 ms).
+notify_title() {
+  local t="" tmp max="$VITALS_NOTIFY_TITLE_MAX"
+  case "$max" in '' | *[!0-9]* | 0) max=60 ;; esac
+  if type vitals_herdr_to >/dev/null 2>&1 && vitals_in_herdr &&
+     [ -n "${HERDR_PANE_ID:-}" ] && command -v jq >/dev/null 2>&1; then
+    # El JSON va a un archivo y no a `$( )`: ver vitals_herdr_to. Si no se puede
+    # crear, se cae al nombre del proyecto en vez de arriesgar un cuelgue.
+    if tmp=$(mktemp "$herdr_diag.title.XXXXXX" 2>/dev/null); then
+      if vitals_herdr_to "$herdr_diag" "$tmp" pane get "$HERDR_PANE_ID"; then
+        # Un timeout deja el archivo a medias, así que jq puede fallar: eso es
+        # un título vacío, que cae a la reserva, nunca un título inventado.
+        t=$(jq -r '.result.pane.terminal_title_stripped // empty' <"$tmp" 2>/dev/null) || t=""
+      fi
+      rm -f "$tmp"
+    fi
+  fi
+  [ -n "$t" ] || t="$proj"
+  # Los saltos de línea se aplanan. Se midió que NO rompen el literal de
+  # AppleScript —`osascript -e 'return "a<LF>b"'` devuelve 0—, así que esto no
+  # tapa un fallo silencioso: es que un aviso de macOS con el título en tres
+  # renglones no identifica nada, y el título es texto arbitrario.
+  t=${t//$'\n'/ }; t=${t//$'\r'/ }; t=${t//$'\t'/ }
+  # El recorte es cosmético (un título largo produce un aviso ilegible) y va en
+  # el locale del shell, donde el corte es por carácter y no por byte.
+  printf '%s' "${t:0:max}"
+}
+
 signals_clear() { # devuelve la ventana a su color de perfil y quita el badge
   type vitals_bg_reset >/dev/null 2>&1 || return 0
   [ "$VITALS_WINDOW_BG" = 1 ] && vitals_bg_reset
@@ -180,24 +231,41 @@ case "$event" in
     report_metadata
     ;;
   Notification)
-    set_state waiting
-    tab_color 230 40 40
-    signals_sync waiting
-    # El estado interno sigue siendo `waiting` para los tres tipos: fuera de
-    # herdr el comportamiento no cambia. Lo que se afina es lo que se le cuenta
-    # a herdr, que es donde el usuario mira con catorce sesiones abiertas.
+    # El estado interno honra el notification_type, con el MISMO mapeo que ya
+    # alimenta a herdr (vitals_state_internal). No todas las notificaciones son
+    # "Claude te espera": `idle_prompt` es "llevas sesenta segundos sin mirar
+    # esta sesión", y marcarlo `waiting` era lo que ponía el semáforo en rojo,
+    # el contador de la barra de menú en 13 y la notificación de macOS a sonar
+    # por sesiones que no necesitan nada. Un tipo que no reconocemos conserva el
+    # estado anterior en vez de inventar uno.
+    nstate=$(vitals_state_internal "$event" "$ntype") || nstate=""
+    if [ -z "$nstate" ]; then
+      nstate=$(sed -n 1p "$state_dir/$session" 2>/dev/null)
+      [ -n "$nstate" ] || nstate=idle
+    fi
+    set_state "$nstate"
+    case "$nstate" in
+      waiting) tab_color 230 40 40 ;;
+      working) tab_color 0 190 70 ;;
+      *)       tab_color 235 180 0 ;;
+    esac
+    signals_sync "$nstate"
     report_state
     report_metadata
     # Notificación de macOS, solo si tras VITALS_NOTIFY_DELAY segundos la sesión
-    # sigue esperando (evita ruido cuando respondes de inmediato).
-    if [ "$VITALS_NOTIFY" = 1 ] && command -v osascript >/dev/null 2>&1; then
+    # sigue esperando (evita ruido cuando respondes de inmediato). Y solo si el
+    # estado resultante es `waiting`: no hay una segunda lista de tipos que
+    # mantener, se cuelga del mismo mapeo, así que un `idle_prompt` ya no suena.
+    if [ "$VITALS_NOTIFY" = 1 ] && [ "$nstate" = waiting ] &&
+       command -v osascript >/dev/null 2>&1; then
       body="${msg:-Claude espera tu respuesta}"
-      # sin comillas dobles ni backslashes en lo que se interpola a AppleScript
-      nproj=${proj//[\"\\]/}; body=${body//[\"\\]/}
       (
         sleep "$VITALS_NOTIFY_DELAY"
         [ "$(head -n 1 "$state_dir/$session" 2>/dev/null)" = waiting ] || exit 0
-        osascript -e "display notification \"$body\" with title \"🔴 $nproj\" subtitle \"claude-vitals\" sound name \"Ping\"" >/dev/null 2>&1
+        ntitle=$(notify_title)
+        # sin comillas dobles ni backslashes en lo que se interpola a AppleScript
+        ntitle=${ntitle//[\"\\]/}; body=${body//[\"\\]/}
+        osascript -e "display notification \"$body\" with title \"🔴 $ntitle\" subtitle \"claude-vitals\" sound name \"Ping\"" >/dev/null 2>&1
       ) &
     fi
     ;;
