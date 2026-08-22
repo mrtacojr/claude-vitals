@@ -20,11 +20,20 @@ state_dir="$configDir/vitals-state"
 [ -f "$configDir/vitals.conf" ] && . "$configDir/vitals.conf"
 : "${VITALS_AI_TIMEOUT:=60}"
 : "${GEMINI_MODEL:=gemini-pro-latest}"
+: "${VITALS_HERDR_RECONCILE:=1}"
+: "${VITALS_HERDR_RECONCILE_BUDGET_S:=3}"
 
 self="$0"; [ -L "$self" ] && self="$(readlink "$self")"
 libfile="$(cd "$(dirname "$self")" && pwd)/vitals-lib.sh"
+# Sin la librería, `vitals` no sabe distinguir un archivo de sesión de un cache
+# ni una sesión viva de una muerta: listaría basura en silencio. Se dice y se
+# sale, en vez de seguir con medio programa.
+if [ ! -f "$libfile" ]; then
+  echo "claude-vitals: falta vitals-lib.sh junto a $self" >&2
+  exit 1
+fi
 # shellcheck source=/dev/null
-[ -f "$libfile" ] && . "$libfile"
+. "$libfile"
 
 fmt_age() { # segundos -> "45s" / "12m" / "1h05m"
   local s=$1
@@ -166,13 +175,133 @@ ai_live() {
   printf '%s\n' "$cacheline" >"$state_dir/ai-health"
 }
 
+# ============ reconciliación de identidad con herdr ============
+#
+# La línea 3 del archivo de estado pasó de ser el UUID de iTerm2 a ser el
+# pane_id de herdr, pero solo la reescribe un evento del hook o un refresco de
+# la statusline. Una sesión que lleva un día quieta dentro de un panel sigue
+# con el UUID viejo —que además es el MISMO en todos los paneles, porque lo
+# heredan del cliente de herdr—, así que el clic del ítem de barra de menú la
+# llevaba a la ventana equivocada. Y no se cura sola: el evento que dispararía
+# la migración es justo el que no llega.
+#
+# Se dio por imposible varias veces porque el pane_id solo lo conoce el proceso
+# de DENTRO del panel. Eso es cierto para el proceso y falso para el sistema:
+# herdr publica la correspondencia. `pane list` da los paneles, `pane
+# process-info` da los procesos en primer plano de cada uno con su PID, y el
+# PID de claude es exactamente lo que guarda la línea 4 del archivo de estado.
+# Desde fuera, la identidad se resuelve leyendo a herdr.
+#
+# Se resuelve AL VUELO y no se escribe nada. Un pane_id persistido puede mentir
+# —el panel se cierra o se renumera y el archivo se queda afirmando algo falso
+# hasta el próximo evento, que es el que no llega—; uno recalculado en cada
+# listado no puede quedarse obsoleto. Y no hace falta persistir: el hook ya
+# reescribe la línea 3 en cada evento, así que una sesión se cura sola en
+# cuanto se usa; esto solo cubre el hueco de las que no reciben ninguno.
+
+# Imprime una línea por cada panel con un `claude` en primer plano:
+#   pid \t pane_id \t socket \t app_de_la_ventana \t binario \t cwd
+#
+# Recibe en $1 los cwd de las filas que aún necesitan identidad, uno por línea,
+# y solo pregunta por los paneles cuyo cwd esté en esa lista. No es solo un
+# ahorro: el cruce EXIGE que el cwd coincida (los PID se reciclan), así que un
+# panel con otro directorio no podría casar con ninguna fila y preguntar por él
+# sería trabajo tirado. En régimen normal —una sola fila pendiente— eso deja la
+# reconciliación en dos llamadas.
+#
+# Sin binario de herdr o sin sockets no llama a nada y no imprime nada: fuera de
+# herdr esto cuesta cero y no deja rastro en el log.
+herdr_pid_map() { # $1 = cwd pendientes, uno por línea
+  local pend="$1" bin sbin cand sock app pane pcwd tmp acc panes diag
+  local budget t0="$SECONDS" nl='
+'
+  budget="$VITALS_HERDR_RECONCILE_BUDGET_S"
+  case "$budget" in '' | *[!0-9]* | 0) budget=3 ;; esac
+  diag="$state_dir/herdr.log"
+  [ -n "$pend" ] || return 0
+
+  # Binario: el que herdr inyecta en el panel, el del PATH, o el que anotó
+  # cualquier sesión que viva en un panel. El tercero no es redundante:
+  # SwiftBar lanza el plugin con /usr/bin:/bin:/usr/sbin:/sbin, donde herdr no
+  # está (medido), así que sin el sidecar no habría binario que llamar.
+  bin="${HERDR_BIN_PATH:-}"
+  [ -x "$bin" ] || bin=$(command -v herdr 2>/dev/null)
+
+  # Sockets: los que anotaron las sesiones y los del directorio de sesiones de
+  # herdr, deduplicados conservando el primero —que es el que trae también la
+  # app dueña de la ventana—. Se recorren TODOS: varios servidores de herdr a
+  # la vez es un caso legítimo, y un mapa construido contra uno solo sería una
+  # identidad inventada para las sesiones de los demás.
+  cand=""
+  for tmp in "$state_dir"/*.herdr; do
+    [ -f "$tmp" ] || continue
+    { read -r sock; read -r app; read -r sbin; } <"$tmp" || continue
+    [ -x "$bin" ] || { [ -x "$sbin" ] && bin="$sbin"; }
+    [ -n "$sock" ] && cand="$cand$sock\t$app$nl"
+  done
+  for tmp in "$HOME"/.config/herdr/sessions/*/herdr.sock; do
+    [ -S "$tmp" ] && cand="$cand$tmp$nl"
+  done
+  [ -x "$bin" ] || return 0
+  [ -n "$cand" ] || return 0
+  cand=$(printf '%s' "$cand" | awk -F'\t' '$1 != "" && !seen[$1]++')
+
+  tmp=$(mktemp "${TMPDIR:-/tmp}/vitals-herdr.XXXXXX") || return 0
+  acc=$(mktemp "${TMPDIR:-/tmp}/vitals-herdr.XXXXXX") || { rm -f "$tmp"; return 0; }
+
+  while IFS=$'\t' read -r sock app; do
+    [ -n "$sock" ] || continue
+    [ $((SECONDS - t0)) -lt "$budget" ] || break
+
+    panes=""
+    HERDR_SOCKET_PATH="$sock" HERDR_BIN_PATH="$bin" \
+      vitals_herdr_to "$diag" "$tmp" pane list &&
+      panes=$(jq -r '.result.panes[]? | [.pane_id, (.cwd // "")] | @tsv' \
+        <"$tmp" 2>/dev/null)
+
+    # Las respuestas se acumulan y se analizan de una sola vez al final: `jq`
+    # cuesta más en arrancar que la llamada a herdr en responder, así que una
+    # invocación por panel era el grueso del costo (medido). `jq` lee varios
+    # documentos JSON seguidos sin ayuda, y cada respuesta trae su propio
+    # pane_id, así que no hay que etiquetarlas.
+    : >"$acc"
+    while IFS=$'\t' read -r pane pcwd; do
+      [ -n "$pane" ] || continue
+      case "$nl$pend$nl" in *"$nl$pcwd$nl"*) ;; *) continue ;; esac
+      [ $((SECONDS - t0)) -lt "$budget" ] || break
+      HERDR_SOCKET_PATH="$sock" HERDR_BIN_PATH="$bin" \
+        vitals_herdr_to "$diag" "$tmp" pane process-info --pane "$pane" &&
+        cat "$tmp" >>"$acc"
+    done <<EOP
+$panes
+EOP
+
+    # Un timeout deja el último documento a medias y `jq` aborta el flujo: por
+    # eso el fallo no se traga, se anota. Lo que no se resolvió conserva su
+    # identidad vieja, que es la degradación segura.
+    jq -r --arg s "$sock" --arg a "$app" --arg b "$bin" '
+      .result.process_info as $pi
+      | $pi.foreground_processes[]?
+      | select(.argv0 == "claude")
+      | [(.pid | tostring), $pi.pane_id, $s, $a, $b, (.cwd // "")] | @tsv' \
+      <"$acc" 2>/dev/null ||
+      vitals_herdr_log "$diag" "respuesta ilegible de pane process-info en $sock"
+  done <<EOC
+$cand
+EOC
+
+  rm -f "$tmp" "$acc"
+}
+
 # ======================= inventario de sesiones =======================
 
-# Emite una fila TSV por sesión viva:
-#   orden \t estado \t proyecto \t segundos \t identidad \t badge_audit \t sidecar
+# Emite una fila TSV por sesión viva, de 10 columnas:
+#   orden · estado · proyecto · segundos · identidad · badge_audit ·
+#   sidecar · socket · app · binario
 # La identidad (columna 5) es un pane_id de herdr o un UUID de iTerm2; se
-# distinguen por el ':'. La 7ª columna es interna (la ruta del sidecar con el
-# socket de herdr) y `--porcelain` la recorta: su contrato público son 5 campos.
+# distinguen por el ':'. De la 7ª en adelante todo es interno —la ruta del
+# sidecar y, para las filas reconciliadas, por dónde alcanzar su panel— y
+# `--porcelain` lo recorta: su contrato público siguen siendo 5 campos.
 # El orden pone primero las que te esperan. Las sesiones cuyo proceso claude ya
 # no existe se descartan aquí: sin esto, una terminal cerrada seguiría gritando
 # "esperando" durante días y `vitals go` saltaría a ventanas fantasma.
@@ -184,7 +313,8 @@ ai_live() {
 # metía el badge en la columna de la identidad, y `vitals go` intentaba saltar a
 # una ventana llamada "F3". 0x1F no es espacio en blanco, así que no colapsa.
 collect_sessions() {
-  local f state cwd uuid pid proj mt now key badge
+  local f state cwd uuid pid proj mt now key badge rows="" pend="" map
+  local T=$'\t'
   now=$(date +%s)
   for f in "$state_dir"/*; do
     [ -f "$f" ] || continue
@@ -212,9 +342,52 @@ collect_sessions() {
       badge=$(vitals_audit_badge "$cwd")
     fi
 
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$key" "$state" "$proj" "$((now - mt))" "$uuid" "$badge" "$f.herdr"
+    # Solo se le pregunta a herdr si hay alguna fila que lo necesite: una viva,
+    # con PID con el que buscarla, con cwd con el que confirmarla, y cuya
+    # identidad no sea ya un pane_id.
+    if [ -n "$pid" ] && [ -n "$cwd" ] && ! vitals_target_is_pane "$uuid"; then
+      pend="$pend$cwd
+"
+    fi
+
+    # Las columnas 8, 9 y 10 (socket, app, binario) nacen vacías y solo las
+    # rellena la reconciliación. Las columnas 11 y 12 —PID y cwd— existen para
+    # el cruce con el mapa de herdr y el awk de abajo las descarta: ni el PID
+    # ni la ruta salen nunca de esta función.
+    rows="$rows$key$T$state$T$proj$T$((now - mt))$T$uuid$T$badge$T$f.herdr$T$T$T$T$pid$T$cwd
+"
   done
+
+  [ -n "$rows" ] || return 0
+  if [ "$VITALS_HERDR_RECONCILE" != 1 ] || [ -z "$pend" ] ||
+     ! type vitals_herdr_to >/dev/null 2>&1 ||
+     ! command -v jq >/dev/null 2>&1; then
+    printf '%s' "$rows" | cut -f1-10
+    return 0
+  fi
+
+  # El mapa viaja por el entorno y no por `-v`: awk interpreta las secuencias
+  # de escape del valor de `-v`, y una ruta con backslash saldría cambiada.
+  # Una fila solo se reata a un panel si coinciden PID **y** cwd: los PID se
+  # reciclan, y atar una sesión al panel equivocado sería peor que dejarla con
+  # su identidad vieja. Si no hay confirmación, no se inventa nada.
+  map=$(herdr_pid_map "$(printf '%s' "$pend" | sort -u)")
+  printf '%s' "$rows" | VITALS_HERDR_MAP="$map" awk -F'\t' -v OFS='\t' '
+    BEGIN {
+      n = split(ENVIRON["VITALS_HERDR_MAP"], lines, "\n")
+      for (i = 1; i <= n; i++) {
+        if (split(lines[i], a, "\t") < 6) continue
+        pane[a[1]] = a[2]; sock[a[1]] = a[3]
+        app[a[1]] = a[4];  bin[a[1]] = a[5]; pcwd[a[1]] = a[6]
+      }
+    }
+    {
+      pid = $11
+      if (index($5, ":") == 0 && pid != "" && (pid in pane) && pcwd[pid] == $12) {
+        $5 = pane[pid]; $8 = sock[pid]; $9 = app[pid]; $10 = bin[pid]
+      }
+      print $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+    }'
 }
 
 cmd_summary() {
@@ -226,7 +399,7 @@ cmd_summary() {
     exit 0
   fi
 
-  while IFS=$'\037' read -r key state proj secs uuid badge _sidecar; do
+  while IFS=$'\037' read -r key state proj secs uuid badge _sidecar _sock _app _bin; do
     n=$((n + 1))
     case "$state" in
       waiting) icon="🔴"; label="esperando";  extra="(necesita tu respuesta)"; waiting=$((waiting + 1)) ;;
@@ -285,8 +458,11 @@ OSA
 # no mostraría nada. El socket va explícito porque SwiftBar lanza el plugin sin
 # el entorno del panel, y sin HERDR_SOCKET_PATH el cliente busca un socket por
 # defecto que no existe (falla con server_not_running, exit 1).
-focus_herdr_pane() { # $1 = pane_id  $2 = ruta del sidecar
-  local sock="" app="" bin=""
+# Las sesiones reconciliadas no tienen sidecar —nunca llegaron a escribirlo con
+# su pane_id—, así que socket, app y binario pueden venir resueltos desde la
+# fila. El sidecar sigue mandando cuando existe: es el dato de primera mano.
+focus_herdr_pane() { # $1 = pane_id  $2 = sidecar  $3 = socket  $4 = app  $5 = binario
+  local sock="$3" app="$4" bin="$5"
   [ -f "$2" ] && { read -r sock; read -r app; read -r bin; } <"$2"
   # El PATH de SwiftBar no lleva a herdr (medido), así que primero se intenta la
   # ruta que la propia sesión anotó y solo después el PATH.
@@ -312,7 +488,7 @@ focus_herdr_pane() { # $1 = pane_id  $2 = ruta del sidecar
 }
 
 cmd_go() { # $1 = índice, parte del nombre del proyecto, o vacío
-  local target="${1:-}" rows pick n=0
+  local target="${1:-}" rows pick n=0 key state proj secs uuid badge sidecar sock app bin
   rows=$(collect_sessions | sort -t$'\t' -k1,1n -k4,4nr | tr '\t' '\037')
   [ -n "$rows" ] || { echo "No hay sesiones de Claude Code activas."; exit 1; }
 
@@ -336,7 +512,7 @@ cmd_go() { # $1 = índice, parte del nombre del proyecto, o vacío
     [ -n "$pick" ] || { echo "Ninguna sesión activa coincide con '$target'."; exit 1; }
   fi
 
-  IFS=$'\037' read -r key state proj secs uuid badge sidecar <<<"$pick"
+  IFS=$'\037' read -r key state proj secs uuid badge sidecar sock app bin <<<"$pick"
 
   if [ -z "$uuid" ]; then
     echo "No sé en qué ventana vive '$proj': su estado lo escribió una versión"
@@ -354,7 +530,7 @@ cmd_go() { # $1 = índice, parte del nombre del proyecto, o vacío
   # No se mira si ESTE proceso corre bajo herdr: `vitals` puede listar sesiones
   # de los dos mundos a la vez, y cada una se alcanza por su propia puerta.
   if vitals_target_is_pane "$uuid"; then
-    focus_herdr_pane "$uuid" "$sidecar" || {
+    focus_herdr_pane "$uuid" "$sidecar" "$sock" "$app" "$bin" || {
       echo "   ...pero herdr ya no tiene ese panel."
       exit 1
     }
