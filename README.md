@@ -89,9 +89,45 @@ defaults write com.ameba.SwiftBar PluginDirectory -string "$HOME/.swiftbar"
 open -a SwiftBar
 ```
 
-El plugin no habla con el estado directamente: consume `vitals --porcelain`, una línea TSV por sesión (`estado`, `proyecto`, `segundos`, `uuid`, `badge`), así que cualquier otra barra o script puede usar la misma fuente.
+El plugin no habla con el estado directamente: consume `vitals --porcelain`, una línea TSV por sesión (`estado`, `proyecto`, `segundos`, `identidad`, `badge`), así que cualquier otra barra o script puede usar la misma fuente.
 
-Si usas Bartender o similar, revisa que no esté escondiendo el ícono nuevo — suele ocultar por defecto los que aparecen por primera vez.
+### Si el ícono no aparece
+
+El ícono lo dibuja SwiftBar, no vitals, así que el diagnóstico se hace de fuera hacia dentro. Los tres motivos por los que no se ve, en orden de frecuencia:
+
+**1. SwiftBar no está corriendo.** Tener la app instalada no es tenerla corriendo:
+
+```bash
+pgrep -x SwiftBar || echo "SwiftBar no está corriendo"
+```
+
+Si no devuelve un PID, ábrela (`open -a SwiftBar`). Que la app esté en `/Applications` y que el plugin funcione a mano no dice nada sobre si está en ejecución.
+
+**2. No arranca sola al iniciar sesión.** SwiftBar se registra con `SMAppService`, y esos registros **no** salen en la lista clásica de ítems de inicio: hay que mirar Ajustes del Sistema → General → Ítems de inicio → *Permitir en segundo plano*. El diagnóstico falso más común es concluir "no está configurada" porque no aparece en la lista de arriba. Su propia preferencia tampoco es prueba de nada por sí sola:
+
+```bash
+defaults read com.ameba.SwiftBar SwiftBarLaunchAtLogin   # 1 = quiere arrancar sola
+```
+
+Un `1` ahí y una ausencia en la lista clásica no se contradicen: son dos cosas distintas.
+
+**3. Está corriendo pero algo lo esconde.** Bartender, Ice y similares ocultan ítems de la barra de menú, y suelen tener una regla general (del tipo *All Other Items*) que hace que **cualquier ítem nuevo nazca escondido**. Si `pgrep -x SwiftBar` sí devuelve un PID, ábrelo y busca `claude-vitals` entre los ítems ocultos antes de tocar nada más. Que SwiftBar recuerde dónde lo pusiste es señal de que el ítem existió alguna vez:
+
+```bash
+defaults read com.ameba.SwiftBar | grep "NSStatusItem Preferred Position"
+```
+
+**Comprobar el plugin sin depender de la app.** Esto lo ejecuta como lo haría SwiftBar —con su entorno mínimo, que no hereda tu `PATH`— y es la forma de separar "el plugin está roto" de "la app no lo está mostrando":
+
+```bash
+env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin bash ~/.swiftbar/vitals.5s.sh; echo "exit=$?"
+```
+
+Debe salir con `exit=0`, una primera línea con el contador y una línea por sesión. Si eso funciona, el problema no está en vitals.
+
+### Por qué vitals puede listar más sesiones que herdr
+
+`vitals` lista **todas** las sesiones vivas de la máquina, vivan o no dentro de un panel de herdr. `herdr agent list` solo puede listar las suyas. Una sesión de Claude Code abierta directamente en una ventana de terminal es un caso previsto y sigue funcionando —su clic la alcanza por AppleScript en vez de por `herdr agent focus`—, así que si los dos conteos no coinciden, la diferencia son esas sesiones. No es un fantasma ni un estado sin limpiar.
 
 ## Cómo funciona
 
@@ -102,7 +138,10 @@ Tres piezas:
 2. **`vitals-hook.sh`** (hooks): invocado en los eventos del ciclo de vida de cada sesión. Escribe el estado en `~/.claude/vitals-state/<session_id>` (línea 1: estado · 2: directorio del proyecto · 3: identidad de la ventana —el `pane_id` de herdr si la sesión vive en un panel, el UUID de iTerm2 si no— que es lo que permite `vitals go` · 4: PID de `claude`, que es lo que distingue una sesión viva de una terminal cerrada), pinta las señales visuales y dispara la notificación de macOS:
    - `UserPromptSubmit` / `PostToolUse` → `working` (verde)
    - `Stop` / `SessionStart` → `idle` (amarillo)
-   - `Notification` → `waiting` (rojo) + notificación si sigue esperando tras `VITALS_NOTIFY_DELAY`
+   - `Notification` → depende del `notification_type`, no de que haya llegado una notificación:
+     - permiso o pregunta (`permission_prompt`, `worker_permission_prompt`, `agent_needs_input`, `quota_auto_resume_stale`) → `waiting` (rojo) + notificación de macOS si sigue esperando tras `VITALS_NOTIFY_DELAY`
+     - inactividad o fin de tarea (`idle_prompt`, `agent_completed`, `quota_auto_resume_fired`) → `idle` (amarillo), **sin** notificación: una sesión que lleva un minuto quieta no te necesita
+     - cualquier otro tipo, incluido uno que invente una versión futura → **conserva** el estado que ya tenía, que es la degradación segura: no inventa un bloqueo ni borra uno real
    - `SessionEnd` → borra el estado y restaura tab, fondo y badge
 
    En cada invocación recoge basura: se van los estados cuyo proceso `claude` ya no existe y los caches sin sesión.
@@ -134,6 +173,31 @@ leyendo el título del terminal. La clasificación sale del campo
 `notification_type` del payload del hook, no de adivinar sobre el texto: una
 notificación de inactividad (`idle_prompt`) ya no se confunde con una sesión
 bloqueada esperando permiso (`permission_prompt`).
+
+Y es **una sola tabla**: el estado interno de vitals y el que se le reporta a
+herdr salen de la misma clasificación, con dos vocabularios (`waiting`↔`blocked`,
+`idle`↔`idle`, `working`↔`working`). Así el número de sesiones que vitals dice
+que te esperan y el de bloqueadas que dice `herdr agent list` no pueden
+divergir: son la misma cuenta.
+
+Dos cosas más que solo pasan dentro de un panel:
+
+- **La notificación de macOS se identifica por el título del panel.** Fuera de
+  herdr el título es el nombre del directorio, que no distingue nada cuando
+  varias sesiones corren en el mismo (`~/Documents`); dentro, herdr ya tiene un
+  nombre útil —el resumen de la conversación— y vitals lo usa. Se pide después
+  del retraso anti-ruido, o sea fuera del plazo del hook, y si herdr no
+  contesta se vuelve al nombre del directorio.
+- **La identidad de una sesión quieta se reconcilia al vuelo.** La línea 3 del
+  archivo de estado solo se reescribe cuando la sesión recibe un evento, así que
+  una que lleva un día sin actividad puede conservar el UUID de iTerm2 anterior
+  —el mismo en todos los paneles, porque lo heredan del cliente— y su clic
+  llevaría a la ventana equivocada. `vitals` resuelve esas filas preguntándole a
+  herdr (`pane list` + `pane process-info`) qué panel tiene ese PID de `claude`
+  en primer plano, y solo la reata si además coincide el directorio. **No
+  escribe nada**: un `pane_id` guardado envejece mal, uno recalculado no puede.
+  Si ninguna fila lo necesita, no se hace ni una llamada; se puede apagar con
+  `VITALS_HERDR_RECONCILE=0`.
 
 Fuera de herdr no cambia absolutamente nada.
 

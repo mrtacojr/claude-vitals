@@ -35,8 +35,14 @@
 
 ## Hook (color de tab y notificaciones)
 #VITALS_TAB_COLOR=1       # pintar el tab de iTerm2 según estado
-#VITALS_NOTIFY=1          # notificación de macOS cuando una sesión queda esperando
+#VITALS_NOTIFY=1          # notificación de macOS cuando una sesión queda esperando.
+                          # Solo suena si el notification_type significa que Claude te
+                          # necesita (permiso o pregunta); nunca por inactividad.
 #VITALS_NOTIFY_DELAY=10   # segundos esperando antes de notificar (anti-ruido)
+#VITALS_NOTIFY_TITLE_MAX=60 # caracteres máximos del título del aviso. Dentro de un panel
+                            # de herdr el título es el del panel, que identifica la sesión
+                            # aunque el proyecto sea un directorio genérico; fuera, y si
+                            # herdr no contesta, es el nombre del directorio.
 
 ## herdr (solo aplica dentro de un panel de herdr; fuera no hace nada)
 #VITALS_HERDR_REPORT=1    # reportar el estado de la sesión a `herdr agent list`
@@ -49,3 +55,12 @@
                                    # pocos segundos, que suele ser justo cuando lo miras.
 #VITALS_HERDR_TIMEOUT_S=2 # plazo de cada llamada a herdr; al agotarse la mata y lo anota en herdr.log.
                           # Déjalo por debajo del timeout del hook en settings.json (5 s por default).
+#VITALS_HERDR_RECONCILE=1 # `vitals` le pregunta a herdr por el panel de las sesiones cuya
+                          # identidad todavía es el UUID de iTerm2 (las que llevan tanto sin
+                          # eventos que nunca migraron). Se resuelve en memoria y NO se escribe
+                          # nada. Si ninguna fila lo necesita no se hace ni una llamada, y fuera
+                          # de herdr no se hace nunca. Ponlo en 0 para desactivarlo.
+#VITALS_HERDR_RECONCILE_BUDGET_S=3 # presupuesto TOTAL de esa reconciliación. Al agotarse, las
+                          # filas sin resolver conservan su identidad anterior: nunca se inventa
+                          # una. Existe para que un herdr que acepta la conexión y no responde no
+                          # pueda colgar al ítem de la barra de menú, que se refresca cada 5 s.
